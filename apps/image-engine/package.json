@@ -1,0 +1,11 @@
+{
+  "name": "@flashcastr/image-engine",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/main.ts",
+  "scripts": {
+    "dev": "npx tsx --watch src/main.ts",
+    "start": "node dist/main.js"
+  }
+}

@@ -1,0 +1,78 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: flashcastr
+      RABBITMQ_DEFAULT_PASS: flashcastr
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: flashcastr
+      POSTGRES_USER: flashcastr
+      POSTGRES_PASSWORD: flashcastr
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  flash-engine:
+    build:
+      context: .
+      dockerfile: apps/flash-engine/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    env_file: .env.local
+    environment:
+      RABBITMQ_URL: amqp://flashcastr:flashcastr@rabbitmq:5672
+
+  image-engine:
+    build:
+      context: .
+      dockerfile: apps/image-engine/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    env_file: .env.local
+    environment:
+      RABBITMQ_URL: amqp://flashcastr:flashcastr@rabbitmq:5672
+
+  database-engine:
+    build:
+      context: .
+      dockerfile: apps/database-engine/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    env_file: .env.local
+    environment:
+      RABBITMQ_URL: amqp://flashcastr:flashcastr@rabbitmq:5672
+      DATABASE_URL: postgresql://flashcastr:flashcastr@postgres:5432/flashcastr
+
+  neynar-engine:
+    build:
+      context: .
+      dockerfile: apps/neynar-engine/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    env_file: .env.local
+    environment:
+      RABBITMQ_URL: amqp://flashcastr:flashcastr@rabbitmq:5672
+      DATABASE_URL: postgresql://flashcastr:flashcastr@postgres:5432/flashcastr
+
+volumes:
+  postgres_data:

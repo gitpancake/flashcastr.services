@@ -193,31 +193,75 @@ async function retryFailedCasts(): Promise<void> {
   }
 }
 
+// Check signer statuses on startup
+async function checkSignerStatuses(): Promise<void> {
+  try {
+    const users = await flashcastrUsersDb.getMany({});
+    const autoCastUsers = users.filter((u) => u.auto_cast);
+
+    if (autoCastUsers.length === 0) {
+      log.info("No auto_cast users found");
+      return;
+    }
+
+    log.info(`Checking signer status for ${autoCastUsers.length} auto_cast users...`);
+
+    let approved = 0;
+    let revoked = 0;
+    let other = 0;
+
+    for (const user of autoCastUsers) {
+      try {
+        const signerUuid = decrypt(user.signer_uuid, SIGNER_ENCRYPTION_KEY);
+        const signer = await neynarClient.lookupSigner({ signerUuid });
+
+        if (signer.status === "approved") {
+          approved++;
+        } else {
+          log.warn(`Signer for ${user.username} (fid ${user.fid}): ${signer.status}`);
+          if (signer.status === "revoked") revoked++;
+          else other++;
+        }
+      } catch (err) {
+        log.warn(`Failed to check signer for ${user.username} (fid ${user.fid}): ${formatError(err)}`);
+        other++;
+      }
+    }
+
+    log.info(`Signer status: ${approved} approved, ${revoked} revoked, ${other} other`);
+  } catch (err) {
+    log.error(`Signer status check failed: ${formatError(err)}`);
+  }
+}
+
 // Start
 const metricsPort = intEnv("METRICS_PORT", 9090);
 startMetricsServer(registry, metricsPort);
 
-const consumer = new NeynarEngineConsumer();
-consumer.startConsuming().catch((err) => {
-  log.error("Failed to start consumer:", err);
-  process.exit(1);
+// Run signer check before starting consumer
+checkSignerStatuses().then(() => {
+  const consumer = new NeynarEngineConsumer();
+  consumer.startConsuming().catch((err) => {
+    log.error("Failed to start consumer:", err);
+    process.exit(1);
+  });
+
+  // Start retry worker
+  const retryInterval = intEnv("RETRY_INTERVAL_MS", 300000); // 5 minutes
+  setInterval(() => {
+    retryFailedCasts().catch((err) => log.error("Retry interval error:", err));
+  }, retryInterval);
+
+  log.info("neynar-engine started");
+
+  const shutdown = async (signal: string) => {
+    log.info(`Received ${signal}, shutting down...`);
+    await consumer.close();
+    await publisher.close();
+    await closePool();
+    process.exit(0);
+  };
+
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
 });
-
-// Start retry worker
-const retryInterval = intEnv("RETRY_INTERVAL_MS", 300000); // 5 minutes
-setInterval(() => {
-  retryFailedCasts().catch((err) => log.error("Retry interval error:", err));
-}, retryInterval);
-
-log.info("neynar-engine started");
-
-const shutdown = async (signal: string) => {
-  log.info(`Received ${signal}, shutting down...`);
-  await consumer.close();
-  await publisher.close();
-  await closePool();
-  process.exit(0);
-};
-
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));

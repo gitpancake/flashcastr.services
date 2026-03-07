@@ -1,4 +1,4 @@
-name: Deploy image-engine to Digital Ocean
+name: Deploy image-engine
 
 on:
   push:
@@ -7,35 +7,32 @@ on:
       - "apps/image-engine/**"
       - "libs/**"
       - "package.json"
-      - "package-lock.json"
       - "tsconfig.base.json"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install doctl
-        uses: digitalocean/action-doctl@v2
+      - name: Deploy to Droplet
+        uses: appleboy/ssh-action@v1.0.3
         with:
-          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          script: |
+            cd /opt/image-engine-app
+            git pull origin main
+            npm ci
 
-      - name: Log in to DO Container Registry
-        run: doctl registry login --expiry-seconds 1200
+            cat > .env << ENVEOF
+            RABBITMQ_URL=${{ secrets.RABBITMQ_URL }}
+            PINATA_JWT=${{ secrets.PINATA_JWT }}
+            PROXY_LIST=${{ secrets.PROXY_LIST }}
+            CONSUMER_CONCURRENCY=${{ secrets.CONSUMER_CONCURRENCY }}
+            METRICS_PORT=9090
+            NODE_ENV=production
+            LOG_LEVEL=info
+            ENVEOF
 
-      - name: Build and push Docker image
-        run: |
-          docker build \
-            -f apps/image-engine/Dockerfile \
-            -t registry.digitalocean.com/${{ secrets.DO_REGISTRY_NAME }}/image-engine:${{ github.sha }} \
-            -t registry.digitalocean.com/${{ secrets.DO_REGISTRY_NAME }}/image-engine:latest \
-            .
-          docker push registry.digitalocean.com/${{ secrets.DO_REGISTRY_NAME }}/image-engine:${{ github.sha }}
-          docker push registry.digitalocean.com/${{ secrets.DO_REGISTRY_NAME }}/image-engine:latest
-
-      - name: Deploy to App Platform
-        run: |
-          doctl apps create-deployment ${{ secrets.DO_APP_ID }} --wait
+            pm2 restart image-engine || pm2 start apps/image-engine/ecosystem.config.cjs
+            pm2 save

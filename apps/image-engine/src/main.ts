@@ -221,7 +221,7 @@ class ImageEngineConsumer extends FlashcastrConsumer<FlashReceivedPayload> {
 }
 
 // Start
-const metricsPort = intEnv("METRICS_PORT", 9090);
+const metricsPort = intEnv("METRICS_PORT", 9093);
 startMetricsServer(registry, metricsPort);
 
 const consumer = new ImageEngineConsumer();

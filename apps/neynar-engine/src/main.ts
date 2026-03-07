@@ -218,9 +218,14 @@ async function checkSignerStatuses(): Promise<void> {
         if (signer.status === "approved") {
           approved++;
         } else {
-          log.warn(`Signer for ${user.username} (fid ${user.fid}): ${signer.status}`);
-          if (signer.status === "revoked") revoked++;
-          else other++;
+          if (signer.status === "revoked") {
+            await flashcastrUsersDb.updateAutoCast(user.fid, false);
+            log.warn(`Signer for ${user.username} (fid ${user.fid}): revoked — auto_cast disabled`);
+            revoked++;
+          } else {
+            log.warn(`Signer for ${user.username} (fid ${user.fid}): ${signer.status}`);
+            other++;
+          }
         }
       } catch (err) {
         log.warn(`Failed to check signer for ${user.username} (fid ${user.fid}): ${formatError(err)}`);

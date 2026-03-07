@@ -17,4 +17,11 @@ export class FlashcastrUsersDb extends Postgres<FlashcastrUser> {
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
     return this.query(`SELECT * FROM flashcastr_users ${whereClause}`, values);
   }
+
+  async updateAutoCast(fid: number, autoCast: boolean): Promise<void> {
+    await this.query(
+      "UPDATE flashcastr_users SET auto_cast = $1 WHERE fid = $2",
+      [autoCast, fid]
+    );
+  }
 }

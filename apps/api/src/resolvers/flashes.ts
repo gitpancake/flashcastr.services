@@ -37,7 +37,7 @@ export function createFlashResolvers(pool: Pool) {
           SELECT
             ff.id, ff.flash_id, ff.user_fid, ff.user_username, ff.user_pfp_url, ff.cast_hash,
             f.flash_id as f_flash_id, f.city, f.player, f.img, f.ipfs_cid, f.text,
-            f.timestamp::text as f_timestamp, f.flash_count
+            EXTRACT(EPOCH FROM f.timestamp)::bigint::text as f_timestamp, f.flash_count
           FROM flashcastr_flashes ff
           INNER JOIN flashcastr_users fu ON ff.user_fid = fu.fid
           INNER JOIN flashes f ON ff.flash_id = f.flash_id
@@ -91,7 +91,7 @@ export function createFlashResolvers(pool: Pool) {
 
         const sql = `
           SELECT flash_id::text as flash_id, city, player, img, ipfs_cid, text,
-                 timestamp::text as timestamp, flash_count
+                 EXTRACT(EPOCH FROM timestamp)::bigint::text as timestamp, flash_count
           FROM flashes
           ${whereClause}
           ORDER BY timestamp DESC
@@ -105,7 +105,7 @@ export function createFlashResolvers(pool: Pool) {
       globalFlash: async (_: unknown, args: { flash_id: string }) => {
         const result = await pool.query(
           `SELECT flash_id::text as flash_id, city, player, img, ipfs_cid, text,
-                  timestamp::text as timestamp, flash_count
+                  EXTRACT(EPOCH FROM timestamp)::bigint::text as timestamp, flash_count
            FROM flashes WHERE flash_id = $1`,
           [args.flash_id]
         );
@@ -117,7 +117,7 @@ export function createFlashResolvers(pool: Pool) {
           `SELECT
             ff.id, ff.flash_id, ff.user_fid, ff.user_username, ff.user_pfp_url, ff.cast_hash,
             f.flash_id as f_flash_id, f.city, f.player, f.img, f.ipfs_cid, f.text,
-            f.timestamp::text as f_timestamp, f.flash_count
+            EXTRACT(EPOCH FROM f.timestamp)::bigint::text as f_timestamp, f.flash_count
           FROM flashcastr_flashes ff
           INNER JOIN flashcastr_users fu ON ff.user_fid = fu.fid
           INNER JOIN flashes f ON ff.flash_id = f.flash_id

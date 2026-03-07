@@ -17,7 +17,7 @@ export function createFlashIdentificationResolvers(pool: Pool) {
             fi.created_at::text as created_at,
             f.flash_id::text as flash_id,
             f.city, f.player, f.img, f.ipfs_cid as flash_ipfs_cid,
-            f.text, f.timestamp::text as flash_timestamp, f.flash_count
+            f.text, EXTRACT(EPOCH FROM f.timestamp)::bigint::text as flash_timestamp, f.flash_count
           FROM flash_identifications fi
           LEFT JOIN flashes f ON fi.matched_flash_id = f.flash_id
           WHERE 1=1
@@ -69,7 +69,7 @@ export function createFlashIdentificationResolvers(pool: Pool) {
             fi.created_at::text as created_at,
             f.flash_id::text as flash_id,
             f.city, f.player, f.img, f.ipfs_cid as flash_ipfs_cid,
-            f.text, f.timestamp::text as flash_timestamp, f.flash_count
+            f.text, EXTRACT(EPOCH FROM f.timestamp)::bigint::text as flash_timestamp, f.flash_count
           FROM flash_identifications fi
           LEFT JOIN flashes f ON fi.matched_flash_id = f.flash_id
           WHERE fi.id = $1`,

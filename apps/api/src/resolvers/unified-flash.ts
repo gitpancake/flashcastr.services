@@ -57,7 +57,7 @@ export function createUnifiedFlashResolvers(pool: Pool) {
         const query = `
           SELECT
             f.flash_id::text as flash_id, f.city, f.player, f.img, f.ipfs_cid,
-            f.text, f.timestamp::text as timestamp, f.flash_count,
+            f.text, EXTRACT(EPOCH FROM f.timestamp)::bigint::text as timestamp, f.flash_count,
             ff.user_fid as farcaster_fid, ff.user_username as farcaster_username,
             ff.user_pfp_url as farcaster_pfp_url, ff.cast_hash as farcaster_cast_hash,
             fi.id as identification_id,
@@ -99,7 +99,7 @@ export function createUnifiedFlashResolvers(pool: Pool) {
         const query = `
           SELECT
             f.flash_id::text as flash_id, f.city, f.player, f.img, f.ipfs_cid,
-            f.text, f.timestamp::text as timestamp, f.flash_count,
+            f.text, EXTRACT(EPOCH FROM f.timestamp)::bigint::text as timestamp, f.flash_count,
             ff.user_fid as farcaster_fid, ff.user_username as farcaster_username,
             ff.user_pfp_url as farcaster_pfp_url, ff.cast_hash as farcaster_cast_hash,
             fi.id as identification_id,

@@ -114,9 +114,9 @@ export abstract class FlashcastrConsumer<T = unknown> {
           await this.handleMessage(envelope, msg);
           channel.ack(msg);
         } catch (err) {
+          const errMsg = (err as Error).message || String(err);
           console.error(
-            `[${this.serviceName}] Error processing message:`,
-            err
+            `[${this.serviceName}] Error processing message: ${errMsg}`
           );
           const shouldRequeue = this.shouldRequeueOnFailure(err as Error);
           if (shouldRequeue) {

@@ -9,12 +9,22 @@ import { decrypt } from "@flashcastr/crypto";
 import { createMetricsRegistry, startMetricsServer, Counter } from "@flashcastr/metrics";
 import { createLogger } from "@flashcastr/logger";
 import { requireEnv, intEnv } from "@flashcastr/config";
+import type { AxiosError } from "axios";
 import type {
   MessageEnvelope,
   FlashStoredPayload,
   FlashCastedPayload,
   FlashcastrFlash,
 } from "@flashcastr/shared-types";
+
+function formatError(err: unknown): string {
+  const axErr = err as AxiosError<{ message?: string; property?: string }>;
+  if (axErr.response) {
+    const data = axErr.response.data;
+    return `${axErr.response.status} ${axErr.response.statusText}: ${data?.message ?? JSON.stringify(data)}`;
+  }
+  return (err as Error).message;
+}
 
 const log = createLogger("neynar-engine");
 const registry = createMetricsRegistry("neynar-engine");
@@ -48,6 +58,7 @@ class NeynarEngineConsumer extends FlashcastrConsumer<FlashStoredPayload> {
   protected override shouldRequeueOnFailure(error: Error): boolean {
     const msg = error.message.toLowerCase();
     if (msg.includes("no user found") || msg.includes("not a flashcastr user")) return false;
+    if (msg.includes("revoked") || msg.includes("403") || msg.includes("forbidden")) return false;
     return true;
   }
 
@@ -80,7 +91,7 @@ class NeynarEngineConsumer extends FlashcastrConsumer<FlashStoredPayload> {
       const users = await neynarClient.fetchBulkUsers({ fids: [appUser.fid] });
       neynarUser = users.users[0];
     } catch (err) {
-      log.error(`Failed to fetch Neynar profile for fid ${appUser.fid}:`, err);
+      log.error(`Failed to fetch Neynar profile for fid ${appUser.fid}: ${formatError(err)}`);
       throw err;
     }
 
@@ -112,7 +123,7 @@ class NeynarEngineConsumer extends FlashcastrConsumer<FlashStoredPayload> {
         log.info(`Cast published for flash ${payload.flash_id}: ${castHash}`);
       } catch (err) {
         castsFailed.inc();
-        log.error(`Failed to cast flash ${payload.flash_id}:`, err);
+        log.error(`Failed to cast flash ${payload.flash_id}: ${formatError(err)}`);
         // Continue — record with null cast_hash for retry
       }
     }
@@ -172,7 +183,7 @@ async function retryFailedCasts(): Promise<void> {
       } catch (err) {
         castsFailed.inc();
         const f = flash as Record<string, unknown>;
-        log.error(`Retry failed for flash ${f.flash_id}:`, err);
+        log.error(`Retry failed for flash ${f.flash_id}: ${formatError(err)}`);
       }
     }
 

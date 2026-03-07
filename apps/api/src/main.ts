@@ -188,9 +188,10 @@ async function startSubscriptionConsumer(): Promise<amqplib.ChannelModel | null>
 async function main() {
   await server.start();
 
+  app.use(cors());
+
   app.use(
     "/graphql",
-    cors(),
     express.json(),
     expressMiddleware(server, {
       context: async ({ req }) => ({ req }),

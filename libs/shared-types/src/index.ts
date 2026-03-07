@@ -1,4 +1,4 @@
-export type { Flash, FlashcastrFlash, FlashcastrUser } from "./types.js";
+export type { Flash, FlashcastrFlash, FlashcastrUser, FlashIdentification } from "./types.js";
 export type {
   MessageEnvelope,
   FlashReceivedPayload,

@@ -19,3 +19,4 @@ jobs:
       - run: npx tsc --project apps/image-engine/tsconfig.json --noEmit
       - run: npx tsc --project apps/database-engine/tsconfig.json --noEmit
       - run: npx tsc --project apps/neynar-engine/tsconfig.json --noEmit
+      - run: npx tsc --project apps/api/tsconfig.json --noEmit

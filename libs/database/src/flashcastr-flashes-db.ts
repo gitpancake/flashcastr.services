@@ -65,4 +65,8 @@ export class FlashcastrFlashesDb extends Postgres<FlashcastrFlash> {
       flashId,
     ]);
   }
+
+  async deleteManyByFid(fid: number): Promise<FlashcastrFlash[]> {
+    return await this.query(`DELETE FROM flashcastr_flashes WHERE user_fid = $1 RETURNING *`, [fid]);
+  }
 }

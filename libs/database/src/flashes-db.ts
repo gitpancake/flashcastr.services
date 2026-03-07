@@ -110,6 +110,25 @@ export class PostgresFlashesDb extends Postgres<Flash> {
     };
   }
 
+  async getAllPlayers(username?: string): Promise<string[]> {
+    let sql = "SELECT DISTINCT player FROM flashes WHERE player IS NOT NULL";
+    const params: string[] = [];
+    if (username) {
+      sql += " AND LOWER(player) = LOWER($1)";
+      params.push(username);
+    }
+    sql += " ORDER BY player";
+    const result = await this.query<{ player: string }>(sql, params);
+    return result.map((row) => row.player).filter(Boolean);
+  }
+
+  async getAllCities(): Promise<string[]> {
+    const result = await this.query<{ city: string }>(
+      "SELECT DISTINCT city FROM flashes WHERE city IS NOT NULL ORDER BY city ASC"
+    );
+    return result.map((row) => row.city);
+  }
+
   private async insertIndividually(flashes: Flash[]): Promise<Flash[]> {
     const successful: Flash[] = [];
     for (const flash of flashes) {

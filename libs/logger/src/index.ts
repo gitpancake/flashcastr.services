@@ -109,4 +109,11 @@ export function createLogger(serviceName: string) {
   };
 }
 
+// Flush remaining logs before process exits
+if (LOKI_URL) {
+  process.on("beforeExit", () => {
+    flushToLoki();
+  });
+}
+
 export type Logger = ReturnType<typeof createLogger>;

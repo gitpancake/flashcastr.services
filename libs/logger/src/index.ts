@@ -41,16 +41,27 @@ async function flushToLoki() {
         `[logger] Loki push failed: ${res.status} ${res.statusText}\n`
       );
     }
-  } catch {
-    // Silently drop — don't crash the service over logging
+  } catch (err) {
+    process.stderr.write(
+      `[logger] Loki fetch error: ${err instanceof Error ? err.message : String(err)}\n`
+    );
   }
 }
+
+let lokiStatusLogged = false;
 
 function pushToLoki(
   serviceName: string,
   level: LogLevel,
   message: string
 ) {
+  if (!lokiStatusLogged) {
+    lokiStatusLogged = true;
+    const url = getLokiUrl();
+    process.stderr.write(
+      `[logger] LOKI_URL ${url ? `set (${url.replace(/\/\/.*@/, "//***@")})` : "NOT SET"}\n`
+    );
+  }
   if (!getLokiUrl()) return;
 
   const nanoseconds = `${Date.now()}000000`;

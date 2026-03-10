@@ -30,6 +30,7 @@ jobs:
             PINATA_JWT=${{ secrets.PINATA_JWT }}
             PROXY_LIST=${{ secrets.PROXY_LIST }}
             CONSUMER_CONCURRENCY=${{ secrets.CONSUMER_CONCURRENCY }}
+            LOKI_URL=${{ secrets.LOKI_URL }}
             METRICS_PORT=9090
             NODE_ENV=production
             LOG_LEVEL=info

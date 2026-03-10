@@ -1,12 +1,12 @@
 # flashcastr.services
 
-Nx monorepo with 4 microservices for the Flashcastr pipeline.
+Nx monorepo with 5 services (4 pipeline + 1 API) for the Flashcastr platform.
 
 ## Quick Reference
 
 ### Workspace Layout
 
-- `apps/` — 4 deployable services (flash-engine, image-engine, database-engine, neynar-engine)
+- `apps/` — 5 deployable services (flash-engine, image-engine, database-engine, neynar-engine, api)
 - `libs/` — 9 shared libraries (shared-types, rabbitmq, database, proxy, metrics, config, health, logger, crypto)
 - All imports between libs use `@flashcastr/<lib-name>` (resolved via npm workspaces + `customConditions`)
 
@@ -17,7 +17,9 @@ Nx monorepo with 4 microservices for the Flashcastr pipeline.
 - **Database:** PostgreSQL (shared between database-engine and neynar-engine)
 - **IPFS:** Pinata API
 - **Farcaster:** Neynar SDK (`@neynar/nodejs-sdk`)
-- **Monitoring:** Prometheus (`prom-client`)
+- **API:** Apollo Server v4, graphql-ws (WebSocket subscriptions)
+- **Monitoring:** Prometheus (`prom-client`), OpenTelemetry (OTLP)
+- **Logging:** Structured logging with Loki shipping (`@flashcastr/logger`)
 - **Build:** Nx workspace with npm workspaces
 
 ### Common Commands
@@ -33,6 +35,7 @@ docker-compose up                                        # Run everything locall
 
 ```
 flash-engine  --FLASH_RECEIVED-->  image-engine  --IMAGE_PINNED-->  database-engine  --FLASH_STORED-->  neynar-engine  --FLASH_CASTED-->
+                                                                                          └──> api (subscriptions)
 ```
 
 All messages use `MessageEnvelope<T>` from `@flashcastr/shared-types` with `id`, `correlationId`, `source`, `type`, `version`, `timestamp`, `payload`.
@@ -75,12 +78,12 @@ All queues have DLQ via `x-dead-letter-exchange: flashcastr.dlx` and `x-max-leng
 | `@flashcastr/metrics` | `libs/metrics` | `createMetricsRegistry`, `startMetricsServer`, re-exports `Counter`, `Gauge`, `Histogram` |
 | `@flashcastr/config` | `libs/config` | `loadConfig`, `requireEnv`, `optionalEnv`, `intEnv` |
 | `@flashcastr/health` | `libs/health` | `startHealthServer` |
-| `@flashcastr/logger` | `libs/logger` | `createLogger` |
+| `@flashcastr/logger` | `libs/logger` | `createLogger` (with Loki shipping when `LOKI_URL` is set) |
 | `@flashcastr/crypto` | `libs/crypto` | `decrypt` (AES-256-GCM) |
 
 ### Deployment
 
-- **Railway:** flash-engine, database-engine, neynar-engine — auto-deploy on push to main with watch paths
+- **Railway:** flash-engine, database-engine, neynar-engine, api — auto-deploy on push to main with watch paths
 - **Digital Ocean:** image-engine — GitHub Action at `.github/workflows/deploy-image-engine.yml`
 - **Dockerfiles:** each service has its own at `apps/<service>/Dockerfile` (multi-stage, node:20-slim)
 - **Infrastructure:** Existing Railway project has Postgres + RabbitMQ already running
@@ -92,12 +95,15 @@ See `.env.example` for full list. Critical per-service:
 - **image-engine:** `RABBITMQ_URL`, `PINATA_JWT`, `PROXY_LIST`, `CONSUMER_CONCURRENCY`
 - **database-engine:** `RABBITMQ_URL`, `DATABASE_URL`, `BATCH_SIZE`, `DB_POOL_MAX`
 - **neynar-engine:** `RABBITMQ_URL`, `DATABASE_URL`, `NEYNAR_API_KEY`, `SIGNER_ENCRYPTION_KEY`
+- **api:** `RABBITMQ_URL`, `DATABASE_URL`, `PORT` (default 4000), `METRICS_PORT` (default 9094)
+- **All (optional):** `LOKI_URL` for log shipping to Loki
 
 ### Code Lineage
 
 This codebase was split from:
 - `invaders.producer` — flash-engine (API fetching), neynar-engine (Farcaster casting), parts of database-engine
 - `invaders.consumer` — image-engine (image download + IPFS pinning), parts of database-engine (batch updates)
+- `flashcastr.api` — api (GraphQL API, migrated into monorepo)
 
 <!-- nx configuration start-->
 <!-- Leave the start & end comments to automatically receive updates. -->

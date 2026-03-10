@@ -1,6 +1,6 @@
 # flashcastr.services
 
-Nx monorepo containing the Flashcastr microservices pipeline. Replaces the previous `invaders.producer` + `invaders.consumer` with 4 fully decoupled services communicating via RabbitMQ.
+Nx monorepo containing the Flashcastr microservices pipeline. Replaces the previous `invaders.producer` + `invaders.consumer` with 5 services (4 core pipeline + 1 API) communicating via RabbitMQ.
 
 ## Architecture
 
@@ -14,6 +14,8 @@ Space Invaders API
   database-engine      --> FLASH_STORED { payload, ipfs_cid, db_info }
        | (RabbitMQ)
   neynar-engine        --> FLASH_CASTED { payload, ipfs_cid, db_info }
+       | (RabbitMQ)
+  api                  <-- subscribes to FLASH_STORED + FLASH_CASTED (WebSocket subscriptions)
 ```
 
 ### Services
@@ -24,12 +26,13 @@ Space Invaders API
 | **image-engine** | Downloads images, pins to IPFS via Pinata, publishes `IMAGE_PINNED` | Digital Ocean |
 | **database-engine** | Batch inserts flashes into Postgres, publishes `FLASH_STORED` | Railway |
 | **neynar-engine** | Casts to Farcaster via Neynar SDK, publishes `FLASH_CASTED` + retry worker | Railway |
+| **api** | GraphQL API (Apollo Server v4) with WebSocket subscriptions, serves the Flashcastr frontend | Railway |
 
 ### RabbitMQ Topology
 
 - **Exchange:** `flashcastr.events` (topic, durable)
 - **Dead Letter Exchange:** `flashcastr.dlx` (topic, durable)
-- **Queues:** `flash-engine.flash-received`, `image-engine.image-pinned`, `database-engine.flash-stored`, `neynar-engine.flash-casted`, `flashcastr.dead-letters`
+- **Queues:** `flash-engine.flash-received`, `image-engine.image-pinned`, `database-engine.flash-stored`, `neynar-engine.flash-casted`, `api.subscriptions`, `flashcastr.dead-letters`
 
 All messages use a common envelope:
 
@@ -53,7 +56,8 @@ flashcastr.services/
 │   ├── flash-engine/          # Fetch from Space Invaders API
 │   ├── image-engine/          # Download + pin to IPFS
 │   ├── database-engine/       # Store in Postgres
-│   └── neynar-engine/         # Cast to Farcaster
+│   ├── neynar-engine/         # Cast to Farcaster
+│   └── api/                   # GraphQL API (migrated from flashcastr.api)
 │
 ├── libs/
 │   ├── shared-types/          # Flash, message envelopes, event constants
@@ -63,7 +67,7 @@ flashcastr.services/
 │   ├── metrics/               # Prometheus registry + HTTP server
 │   ├── config/                # Env var helpers
 │   ├── health/                # Health check server
-│   ├── logger/                # Structured logging
+│   ├── logger/                # Structured logging with Loki shipping
 │   └── crypto/                # AES-256-GCM decrypt (signer keys)
 │
 ├── docker-compose.yml         # Local dev (RabbitMQ + Postgres + all services)
@@ -111,6 +115,8 @@ Key variables per service:
 | `NEYNAR_API_KEY` | neynar-engine | Neynar API key for Farcaster |
 | `SIGNER_ENCRYPTION_KEY` | neynar-engine | Hex key for decrypting signer UUIDs |
 | `METRICS_PORT` | All | Prometheus metrics port (default: 9090) |
+| `LOKI_URL` | All (optional) | Loki URL for log shipping (e.g., `http://loki:3100`) |
+| `PORT` | api | GraphQL API port (default: 4000) |
 
 ### Type Checking
 
@@ -120,11 +126,12 @@ npx tsc --project apps/flash-engine/tsconfig.json --noEmit
 npx tsc --project apps/image-engine/tsconfig.json --noEmit
 npx tsc --project apps/database-engine/tsconfig.json --noEmit
 npx tsc --project apps/neynar-engine/tsconfig.json --noEmit
+npx tsc --project apps/api/tsconfig.json --noEmit
 ```
 
 ## Deployment
 
-### Railway (flash-engine, database-engine, neynar-engine)
+### Railway (flash-engine, database-engine, neynar-engine, api)
 
 These deploy automatically on push to `main` via Railway's git integration. Each service is configured with:
 
@@ -145,7 +152,7 @@ Required GitHub secrets:
 
 ## Migration from Old Architecture
 
-The old system (`invaders.producer` + `invaders.consumer`) uses a single RabbitMQ queue `flash_images`. The new system uses separate queues under the `flashcastr.events` exchange. Both can run in parallel safely:
+The old system (`invaders.producer` + `invaders.consumer`) uses a single RabbitMQ queue `flash_images`. The `apps/api` service was migrated from the standalone `flashcastr.api` repository. The new system uses separate queues under the `flashcastr.events` exchange. Both old and new pipeline can run in parallel safely:
 
 - Same Postgres database (ON CONFLICT handles overlap)
 - Different RabbitMQ queues (no interference)

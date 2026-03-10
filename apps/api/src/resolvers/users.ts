@@ -1,7 +1,7 @@
 import type { Pool } from "pg";
 import { GraphQLError } from "graphql";
 import { verifyApiKey } from "../auth.js";
-import { SignupOperations } from "../services/signup.js";
+import { SignupOperations, broadcastUsers } from "../services/signup.js";
 import {
   signupsInitiatedTotal,
   signupsCompletedTotal,
@@ -120,6 +120,9 @@ export function createUserResolvers(pool: Pool) {
 
         await usersDb.deleteByFid(args.fid);
         await flashesDb.deleteManyByFid(args.fid);
+
+        // Broadcast updated users to flash-engine
+        await broadcastUsers(usersDb);
 
         return { success: true, message: "User deleted successfully" };
       },

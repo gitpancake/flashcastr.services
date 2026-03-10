@@ -3,11 +3,11 @@ config();
 
 import type { ConsumeMessage } from "amqplib";
 import { FlashcastrConsumer, FlashcastrPublisher, QUEUES, ROUTING_KEYS } from "@flashcastr/rabbitmq";
-import { getPool, PostgresFlashesDb, closePool } from "@flashcastr/database";
-import { createMetricsRegistry, startMetricsServer, Counter } from "@flashcastr/metrics";
+import { getPool, PostgresFlashesDb, FlashcastrUsersDb, closePool } from "@flashcastr/database";
+import { createMetricsRegistry, startMetricsServer, Counter, Gauge } from "@flashcastr/metrics";
 import { createLogger } from "@flashcastr/logger";
 import { intEnv } from "@flashcastr/config";
-import type { MessageEnvelope, ImagePinnedPayload, FlashStoredPayload, Flash } from "@flashcastr/shared-types";
+import type { MessageEnvelope, ImagePinnedPayload, FlashStoredPayload, Flash, UsersBroadcastPayload } from "@flashcastr/shared-types";
 
 const log = createLogger("database-engine");
 const registry = createMetricsRegistry("database-engine");
@@ -21,6 +21,18 @@ const flashesStored = new Counter({
 const flashesFailed = new Counter({
   name: "database_engine_flashes_failed_total",
   help: "Total flash storage failures",
+  registers: [registry],
+});
+
+const usersBroadcastTotal = new Counter({
+  name: "database_engine_users_broadcast_total",
+  help: "Times users were broadcast",
+  registers: [registry],
+});
+
+const usersBroadcastCount = new Gauge({
+  name: "database_engine_users_broadcast_count",
+  help: "Number of users in last broadcast",
   registers: [registry],
 });
 
@@ -38,7 +50,22 @@ let flushTimer: NodeJS.Timeout | null = null;
 
 const pool = getPool();
 const flashesDb = new PostgresFlashesDb(pool);
+const usersDb = new FlashcastrUsersDb(pool);
 const publisher = new FlashcastrPublisher("database-engine");
+
+async function broadcastUsers(): Promise<void> {
+  try {
+    const users = await usersDb.getMany({});
+    const usernames = users.map((u) => u.username.toLowerCase());
+    const payload: UsersBroadcastPayload = { usernames };
+    await publisher.publish(ROUTING_KEYS.USERS_BROADCAST, payload);
+    usersBroadcastTotal.inc();
+    usersBroadcastCount.set(usernames.length);
+    log.info(`Broadcast ${usernames.length} users`);
+  } catch (err) {
+    log.error("Failed to broadcast users:", err);
+  }
+}
 
 async function flushBatch(): Promise<void> {
   if (pendingBatch.length === 0) return;
@@ -132,6 +159,21 @@ class DatabaseEngineConsumer extends FlashcastrConsumer<ImagePinnedPayload> {
   }
 }
 
+// Consumer for users.request messages from flash-engine
+class UsersRequestConsumer extends FlashcastrConsumer<Record<string, never>> {
+  constructor() {
+    super("database-engine", QUEUES.USERS_REQUEST);
+  }
+
+  protected async handleMessage(
+    envelope: MessageEnvelope<Record<string, never>>,
+    _raw: ConsumeMessage
+  ): Promise<void> {
+    log.info(`Received users.request from ${envelope.source}`);
+    await broadcastUsers();
+  }
+}
+
 // Start
 const metricsPort = intEnv("METRICS_PORT", 9090);
 startMetricsServer(registry, metricsPort);
@@ -142,12 +184,21 @@ consumer.startConsuming().catch((err) => {
   process.exit(1);
 });
 
+const usersRequestConsumer = new UsersRequestConsumer();
+usersRequestConsumer.startConsuming().catch((err) => {
+  log.error("Failed to start users request consumer:", err);
+});
+
+// Broadcast users on startup (so flash-engine gets users even if it started first)
+broadcastUsers().catch((err) => log.error("Initial users broadcast failed:", err));
+
 log.info("database-engine started");
 
 const shutdown = async (signal: string) => {
   log.info(`Received ${signal}, shutting down...`);
   await flushBatch();
   await consumer.close();
+  await usersRequestConsumer.close();
   await publisher.close();
   await closePool();
   process.exit(0);

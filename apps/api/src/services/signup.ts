@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
-import type { FlashcastrUser, FlashcastrFlash } from "@flashcastr/shared-types";
+import type { FlashcastrUser, FlashcastrFlash, UsersBroadcastPayload } from "@flashcastr/shared-types";
 import { FlashcastrUsersDb, FlashcastrFlashesDb } from "@flashcastr/database";
+import { FlashcastrPublisher, ROUTING_KEYS } from "@flashcastr/rabbitmq";
 import { encrypt } from "@flashcastr/crypto";
 import { requireEnv } from "@flashcastr/config";
 import neynarClient from "../neynar/client.js";
@@ -9,6 +10,20 @@ import { createLogger } from "@flashcastr/logger";
 
 const log = createLogger("api-signup");
 const MAX_FLASHES_TO_INSERT = 7000;
+
+const publisher = new FlashcastrPublisher("api");
+
+export async function broadcastUsers(usersDb: FlashcastrUsersDb): Promise<void> {
+  try {
+    const users = await usersDb.getMany({});
+    const usernames = users.map((u) => u.username.toLowerCase());
+    const payload: UsersBroadcastPayload = { usernames };
+    await publisher.publish(ROUTING_KEYS.USERS_BROADCAST, payload);
+    log.info(`Broadcast ${usernames.length} users after change`);
+  } catch (err) {
+    log.error("Failed to broadcast users:", err);
+  }
+}
 
 export class SignupOperations {
   private pool: Pool;
@@ -94,6 +109,9 @@ export class SignupOperations {
       await this.flashesDb.insertMany(dbFlashes);
       log.info(`Inserted ${dbFlashes.length} flash records for FID ${fid}`);
     }
+
+    // Broadcast updated users to flash-engine
+    await broadcastUsers(this.usersDb);
 
     // Fetch finalized user
     const finalUser = await this.usersDb.getByFid(fid);

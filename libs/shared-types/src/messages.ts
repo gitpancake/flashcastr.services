@@ -34,3 +34,7 @@ export interface FlashCastedPayload extends FlashStoredPayload {
   user_username: string;
   auto_cast: boolean;
 }
+
+export interface UsersBroadcastPayload {
+  usernames: string[];
+}

@@ -5,5 +5,6 @@ export type {
   ImagePinnedPayload,
   FlashStoredPayload,
   FlashCastedPayload,
+  UsersBroadcastPayload,
 } from "./messages.js";
 export { EVENTS } from "./events.js";

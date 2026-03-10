@@ -1,4 +1,6 @@
-const LOKI_URL = process.env.LOKI_URL;
+function getLokiUrl(): string | undefined {
+  return process.env.LOKI_URL;
+}
 const BATCH_INTERVAL_MS = 2000;
 const BATCH_SIZE_LIMIT = 100;
 
@@ -13,7 +15,7 @@ let batchBuffer: LokiStream[] = [];
 let flushTimer: ReturnType<typeof setInterval> | null = null;
 
 function startFlushTimer() {
-  if (flushTimer || !LOKI_URL) return;
+  if (flushTimer || !getLokiUrl()) return;
   flushTimer = setInterval(flushToLoki, BATCH_INTERVAL_MS);
   // Don't let the timer keep the process alive
   if (flushTimer && typeof flushTimer === "object" && "unref" in flushTimer) {
@@ -22,13 +24,13 @@ function startFlushTimer() {
 }
 
 async function flushToLoki() {
-  if (batchBuffer.length === 0 || !LOKI_URL) return;
+  if (batchBuffer.length === 0 || !getLokiUrl()) return;
 
   const streams = batchBuffer;
   batchBuffer = [];
 
   try {
-    const res = await fetch(`${LOKI_URL}/loki/api/v1/push`, {
+    const res = await fetch(`${getLokiUrl()}/loki/api/v1/push`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ streams }),
@@ -49,7 +51,7 @@ function pushToLoki(
   level: LogLevel,
   message: string
 ) {
-  if (!LOKI_URL) return;
+  if (!getLokiUrl()) return;
 
   const nanoseconds = `${Date.now()}000000`;
 
@@ -110,10 +112,8 @@ export function createLogger(serviceName: string) {
 }
 
 // Flush remaining logs before process exits
-if (LOKI_URL) {
-  process.on("beforeExit", () => {
-    flushToLoki();
-  });
-}
+process.on("beforeExit", () => {
+  if (getLokiUrl()) flushToLoki();
+});
 
 export type Logger = ReturnType<typeof createLogger>;

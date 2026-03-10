@@ -7,5 +7,9 @@ module.exports = {
     node_args: '--expose-gc',
     max_memory_restart: '1G',
     exp_backoff_restart_delay: 100,
+    log_date_format: 'YYYY-MM-DD HH:mm:ss',
+    max_size: '10M',
+    retain: 3,
+    compress: true,
   }],
 };

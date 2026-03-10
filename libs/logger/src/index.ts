@@ -1,6 +1,35 @@
 function getLokiUrl(): string | undefined {
   return process.env.LOKI_URL;
 }
+
+function parseLokiUrl(raw: string): {
+  url: string;
+  headers: Record<string, string>;
+} {
+  const parsed = new URL(raw);
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (parsed.username) {
+    const credentials = Buffer.from(
+      `${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password)}`
+    ).toString("base64");
+    headers["Authorization"] = `Basic ${credentials}`;
+    parsed.username = "";
+    parsed.password = "";
+  }
+  return { url: parsed.toString().replace(/\/$/, ""), headers };
+}
+
+let lokiConfig: ReturnType<typeof parseLokiUrl> | null = null;
+
+function getLokiConfig() {
+  const raw = getLokiUrl();
+  if (!raw) return null;
+  if (!lokiConfig) lokiConfig = parseLokiUrl(raw);
+  return lokiConfig;
+}
+
 const BATCH_INTERVAL_MS = 2000;
 const BATCH_SIZE_LIMIT = 100;
 
@@ -24,15 +53,16 @@ function startFlushTimer() {
 }
 
 async function flushToLoki() {
-  if (batchBuffer.length === 0 || !getLokiUrl()) return;
+  const config = getLokiConfig();
+  if (batchBuffer.length === 0 || !config) return;
 
   const streams = batchBuffer;
   batchBuffer = [];
 
   try {
-    const res = await fetch(`${getLokiUrl()}/loki/api/v1/push`, {
+    const res = await fetch(`${config.url}/loki/api/v1/push`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: config.headers,
       body: JSON.stringify({ streams }),
     });
     if (!res.ok) {

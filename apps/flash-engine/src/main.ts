@@ -84,6 +84,13 @@ class FlashEngineUsersConsumer extends FlashcastrConsumer<UsersBroadcastPayload>
     usersReceivedTotal.inc();
     log.info(`Received users broadcast: ${registeredPlayers.size} registered players (source: ${envelope.source})`);
   }
+
+  protected onReconnect(): void {
+    publisher.publish(ROUTING_KEYS.USERS_REQUEST, {}).then(() => {
+      usersRequestTotal.inc();
+      log.info("Re-requested users after reconnect");
+    }).catch((err) => log.error("Failed to re-request users after reconnect:", err));
+  }
 }
 
 function isPeakFlashTime(): boolean {
@@ -120,12 +127,11 @@ async function fetchAndPublish(): Promise<void> {
 
   if (lastFlashCountValue === currentFlashCount) {
     consecutiveNoChanges++;
-    const shouldSkip = Math.random() < Math.min(consecutiveNoChanges, 10) * 0.1;
-    if (shouldSkip) {
+    const skipChance = Math.min(consecutiveNoChanges, 10) * 0.1;
+    if (Math.random() < skipChance) {
       log.debug(`Backoff skip (${consecutiveNoChanges} consecutive unchanged)`);
       return;
     }
-    return;
   }
 
   log.info(`Flash count changed: ${lastFlashCountValue} → ${currentFlashCount}`);

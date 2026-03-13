@@ -31,6 +31,10 @@ export abstract class FlashcastrConsumer<T = unknown> {
     return false;
   }
 
+  /** Override to run logic after a successful reconnect (e.g. re-fetch cached state) */
+  protected onReconnect(): void {}
+
+
   private getReconnectDelay(): number {
     return Math.min(
       FlashcastrConsumer.INITIAL_RECONNECT_DELAY *
@@ -56,6 +60,7 @@ export abstract class FlashcastrConsumer<T = unknown> {
         this.reconnectAttempts = 0;
         this.reconnecting = false;
         console.log(`[${this.serviceName}] Reconnected successfully`);
+        this.onReconnect();
         return;
       } catch (err) {
         console.error(

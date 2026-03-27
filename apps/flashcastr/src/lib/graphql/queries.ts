@@ -49,6 +49,49 @@ export const FLASHCASTR_FLASHES_QUERY = `
   }
 `;
 
+export const USERS_QUERY = `
+  query Users($fid: Int) {
+    users(fid: $fid) {
+      fid
+      username
+      auto_cast
+    }
+  }
+`;
+
+export const ALL_FLASH_PLAYERS_QUERY = `
+  query AllFlashesPlayers($username: String) {
+    allFlashesPlayers(username: $username)
+  }
+`;
+
+export const INITIATE_SIGNUP_MUTATION = `
+  mutation InitiateSignup($username: String!) {
+    initiateSignup(username: $username) {
+      signer_uuid
+      public_key
+      status
+      signer_approval_url
+      fid
+    }
+  }
+`;
+
+export const POLL_SIGNUP_STATUS_QUERY = `
+  query PollSignupStatus($signer_uuid: String!, $username: String!) {
+    pollSignupStatus(signer_uuid: $signer_uuid, username: $username) {
+      status
+      fid
+      user {
+        fid
+        username
+        auto_cast
+      }
+      message
+    }
+  }
+`;
+
 export const FLASH_STORED_SUBSCRIPTION = `
   subscription FlashStored {
     flashStored {

@@ -1,9 +1,9 @@
-import { FlashFeed } from "@/components/feed/flash-feed";
+import { AppShell } from "@/components/app-shell";
 
 export default function Home() {
   return (
     <main className="min-h-screen">
-      <FlashFeed />
+      <AppShell />
     </main>
   );
 }

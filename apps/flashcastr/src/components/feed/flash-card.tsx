@@ -30,7 +30,7 @@ export function FlashCard({ flash, viewMode }: FlashCardProps) {
         />
         <div className="absolute inset-0 flex items-end bg-gradient-to-t from-black/60 to-transparent opacity-0 transition-opacity duration-200 group-hover:opacity-100">
           <span className="p-1.5 text-[10px] font-mono text-white">
-            #{flash.flash_id}
+            {flash.city ?? "Unknown"}
           </span>
         </div>
       </div>

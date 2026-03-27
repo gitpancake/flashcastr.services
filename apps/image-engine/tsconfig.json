@@ -4,5 +4,25 @@
     "outDir": "../../dist/apps/image-engine",
     "rootDir": "src"
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "references": [
+    {
+      "path": "../../libs/shared-types"
+    },
+    {
+      "path": "../../libs/proxy"
+    },
+    {
+      "path": "../../libs/config"
+    },
+    {
+      "path": "../../libs/logger"
+    },
+    {
+      "path": "../../libs/metrics"
+    },
+    {
+      "path": "../../libs/rabbitmq"
+    }
+  ]
 }

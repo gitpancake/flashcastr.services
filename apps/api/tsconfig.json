@@ -4,5 +4,28 @@
     "outDir": "../../dist/apps/api",
     "rootDir": "src"
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "references": [
+    {
+      "path": "../../libs/crypto"
+    },
+    {
+      "path": "../../libs/metrics"
+    },
+    {
+      "path": "../../libs/shared-types"
+    },
+    {
+      "path": "../../libs/rabbitmq"
+    },
+    {
+      "path": "../../libs/logger"
+    },
+    {
+      "path": "../../libs/config"
+    },
+    {
+      "path": "../../libs/database"
+    }
+  ]
 }

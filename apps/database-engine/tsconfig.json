@@ -4,5 +4,25 @@
     "outDir": "../../dist/apps/database-engine",
     "rootDir": "src"
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "references": [
+    {
+      "path": "../../libs/shared-types"
+    },
+    {
+      "path": "../../libs/config"
+    },
+    {
+      "path": "../../libs/logger"
+    },
+    {
+      "path": "../../libs/metrics"
+    },
+    {
+      "path": "../../libs/database"
+    },
+    {
+      "path": "../../libs/rabbitmq"
+    }
+  ]
 }

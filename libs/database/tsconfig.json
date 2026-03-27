@@ -4,5 +4,10 @@
     "outDir": "../../dist/libs/database",
     "rootDir": "src"
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "references": [
+    {
+      "path": "../shared-types"
+    }
+  ]
 }

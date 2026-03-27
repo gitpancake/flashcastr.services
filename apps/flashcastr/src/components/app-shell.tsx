@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 import { useMiniApp } from "@/providers/miniapp-provider";
 import { useAppUser } from "@/hooks/use-app-user";
+import { Header } from "@/components/header";
 import { FlashFeed } from "@/components/feed/flash-feed";
 import { SetupFlow } from "@/components/setup/setup-flow";
 import { Button } from "@/components/ui/button";
@@ -61,6 +62,8 @@ export function AppShell() {
 
   return (
     <div>
+      <Header />
+
       {/* Banner for users with Farcaster context but no linked account */}
       {fid && !appUser && (
         <div className="bg-secondary border-b border-border px-4 py-3 text-center">

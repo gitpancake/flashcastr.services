@@ -10,13 +10,23 @@ interface UnifiedFlashesResponse {
   unifiedFlashes: UnifiedFlash[];
 }
 
-export function useUnifiedFlashes() {
+export interface FlashFilters {
+  player?: string;
+  city?: string;
+}
+
+export function useUnifiedFlashes(filters: FlashFilters = {}) {
   const query = useInfiniteQuery({
-    queryKey: ["unified-flashes"],
+    queryKey: ["unified-flashes", filters],
     queryFn: async ({ pageParam = 1 }) => {
       const data = await gqlFetch<UnifiedFlashesResponse>(
         UNIFIED_FLASHES_QUERY,
-        { page: pageParam, limit: FEED_PAGE_SIZE }
+        {
+          page: pageParam,
+          limit: FEED_PAGE_SIZE,
+          ...(filters.player && { player: filters.player }),
+          ...(filters.city && { city: filters.city }),
+        }
       );
       return data.unifiedFlashes;
     },

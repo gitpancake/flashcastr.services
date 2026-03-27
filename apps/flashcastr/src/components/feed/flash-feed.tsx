@@ -17,14 +17,27 @@ function getInitialViewMode(): ViewMode {
   return "medium";
 }
 
+function useDebounce<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+  return debounced;
+}
+
 export function FlashFeed() {
   const [viewMode, setViewMode] = useState<ViewMode>("medium");
+  const [playerFilter, setPlayerFilter] = useState("");
+  const debouncedPlayer = useDebounce(playerFilter.trim(), 300);
+
   const { flashes, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } =
-    useUnifiedFlashes();
+    useUnifiedFlashes(
+      debouncedPlayer ? { player: debouncedPlayer } : {}
+    );
 
   useFlashSubscription();
 
-  // Hydrate view mode from localStorage after mount
   useEffect(() => {
     setViewMode(getInitialViewMode());
   }, []);
@@ -44,6 +57,8 @@ export function FlashFeed() {
         flashCount={flashes.length}
         viewMode={viewMode}
         onViewModeChange={handleViewModeChange}
+        playerFilter={playerFilter}
+        onPlayerFilterChange={setPlayerFilter}
       />
       <FlashGrid
         flashes={flashes}

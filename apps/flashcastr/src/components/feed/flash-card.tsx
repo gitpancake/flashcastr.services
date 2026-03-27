@@ -110,11 +110,6 @@ export function FlashCard({ flash, viewMode }: FlashCardProps) {
         {displayName && (
           <p className="text-xs text-green-500 font-mono">[ID] {displayName}</p>
         )}
-        {flash.text && (
-          <p className="text-xs text-muted-foreground line-clamp-2">
-            {flash.text}
-          </p>
-        )}
       </div>
     </div>
   );

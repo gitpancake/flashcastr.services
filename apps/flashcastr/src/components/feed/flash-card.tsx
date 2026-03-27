@@ -90,24 +90,20 @@ export function FlashCard({ flash, viewMode }: FlashCardProps) {
                 className="rounded-full"
               />
             )}
-            <span className="font-mono text-sm font-bold text-primary">
-              #{flash.flash_id}
+            <span className="text-sm font-medium">
+              {flash.username ? `@${flash.username}` : flash.player ?? "—"}
             </span>
           </div>
           {timeAgo && (
             <span className="text-xs text-muted-foreground">{timeAgo}</span>
           )}
         </div>
-        <div className="flex items-center gap-2 text-sm">
-          {flash.username ? (
-            <span>@{flash.username}</span>
-          ) : (
-            flash.player && <span>{flash.player}</span>
-          )}
+        <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          <span className="font-mono">#{flash.flash_id}</span>
           {flash.city && (
             <>
-              <span className="text-muted-foreground">·</span>
-              <span className="text-muted-foreground">{flash.city}</span>
+              <span>·</span>
+              <span>{flash.city}</span>
             </>
           )}
         </div>

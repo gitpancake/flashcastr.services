@@ -44,4 +44,39 @@ export interface FlashCastedEvent {
   user_username: string | null;
 }
 
+export interface FlashcastrFlash {
+  id: number;
+  flash_id: string;
+  user_fid: number;
+  user_username: string | null;
+  user_pfp_url: string | null;
+  cast_hash: string | null;
+  flash: {
+    flash_id: string;
+    city: string | null;
+    player: string | null;
+    img: string | null;
+    ipfs_cid: string | null;
+    text: string | null;
+    timestamp: string | null;
+    flash_count: string | null;
+  };
+}
+
+/** Normalized flash for rendering — both feed types map into this shape */
+export interface NormalizedFlash {
+  flash_id: string;
+  ipfs_cid: string;
+  city: string | null;
+  player: string | null;
+  timestamp: string | null;
+  text: string | null;
+  flash_count: string | null;
+  username: string | null;
+  pfp_url: string | null;
+  cast_hash: string | null;
+  identification: FlashIdentificationInfo | null;
+}
+
+export type FeedMode = "global" | "players";
 export type ViewMode = "small" | "medium" | "large";

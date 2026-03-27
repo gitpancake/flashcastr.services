@@ -26,6 +26,29 @@ export const UNIFIED_FLASHES_QUERY = `
   }
 `;
 
+export const FLASHCASTR_FLASHES_QUERY = `
+  query Flashes($page: Int, $limit: Int, $fid: Int, $username: String, $city: String) {
+    flashes(page: $page, limit: $limit, fid: $fid, username: $username, city: $city) {
+      id
+      flash_id
+      user_fid
+      user_username
+      user_pfp_url
+      cast_hash
+      flash {
+        flash_id
+        city
+        player
+        img
+        ipfs_cid
+        text
+        timestamp
+        flash_count
+      }
+    }
+  }
+`;
+
 export const FLASH_STORED_SUBSCRIPTION = `
   subscription FlashStored {
     flashStored {

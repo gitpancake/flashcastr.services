@@ -1,71 +1,81 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { FeedHeader } from "./feed-header";
 import { FlashGrid } from "./flash-grid";
 import { useUnifiedFlashes } from "@/hooks/use-unified-flashes";
+import { useFlashcastrFlashes } from "@/hooks/use-flashcastr-flashes";
 import { useFlashSubscription } from "@/hooks/use-flash-subscription";
-import type { ViewMode } from "@/types/flash";
+import {
+  normalizeUnifiedFlash,
+  normalizeFlashcastrFlash,
+} from "@/lib/flash-utils";
+import type { FeedMode, ViewMode } from "@/types/flash";
 
-const STORAGE_KEY = "flashcastr-view-mode";
+const VIEW_STORAGE_KEY = "flashcastr-view-mode";
+const FEED_STORAGE_KEY = "flashcastr-feed-mode";
 
-function getInitialViewMode(): ViewMode {
-  if (typeof window === "undefined") return "medium";
-  const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored === "small" || stored === "medium" || stored === "large")
-    return stored;
-  return "medium";
-}
-
-function useDebounce<T>(value: T, delay: number): T {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const timer = setTimeout(() => setDebounced(value), delay);
-    return () => clearTimeout(timer);
-  }, [value, delay]);
-  return debounced;
+function getStored<T extends string>(key: string, valid: T[], fallback: T): T {
+  if (typeof window === "undefined") return fallback;
+  const stored = localStorage.getItem(key);
+  return valid.includes(stored as T) ? (stored as T) : fallback;
 }
 
 export function FlashFeed() {
   const [viewMode, setViewMode] = useState<ViewMode>("medium");
-  const [playerFilter, setPlayerFilter] = useState("");
-  const debouncedPlayer = useDebounce(playerFilter.trim(), 300);
+  const [feedMode, setFeedMode] = useState<FeedMode>("global");
 
-  const { flashes, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } =
-    useUnifiedFlashes(
-      debouncedPlayer ? { player: debouncedPlayer } : {}
-    );
+  const global = useUnifiedFlashes();
+  const players = useFlashcastrFlashes();
 
   useFlashSubscription();
 
+  // Hydrate from localStorage after mount
   useEffect(() => {
-    setViewMode(getInitialViewMode());
+    setViewMode(getStored<ViewMode>(VIEW_STORAGE_KEY, ["small", "medium", "large"], "medium"));
+    setFeedMode(getStored<FeedMode>(FEED_STORAGE_KEY, ["global", "players"], "global"));
   }, []);
+
+  const isGlobal = feedMode === "global";
+  const active = isGlobal ? global : players;
+
+  const flashes = useMemo(
+    () =>
+      isGlobal
+        ? global.flashes.map(normalizeUnifiedFlash)
+        : players.flashes.map(normalizeFlashcastrFlash),
+    [isGlobal, global.flashes, players.flashes]
+  );
 
   const handleViewModeChange = useCallback((mode: ViewMode) => {
     setViewMode(mode);
-    localStorage.setItem(STORAGE_KEY, mode);
+    localStorage.setItem(VIEW_STORAGE_KEY, mode);
+  }, []);
+
+  const handleFeedModeChange = useCallback((mode: FeedMode) => {
+    setFeedMode(mode);
+    localStorage.setItem(FEED_STORAGE_KEY, mode);
   }, []);
 
   const handleLoadMore = useCallback(() => {
-    fetchNextPage();
-  }, [fetchNextPage]);
+    active.fetchNextPage();
+  }, [active]);
 
   return (
     <div className="w-full max-w-6xl mx-auto px-4 py-6">
       <FeedHeader
         flashCount={flashes.length}
+        feedMode={feedMode}
+        onFeedModeChange={handleFeedModeChange}
         viewMode={viewMode}
         onViewModeChange={handleViewModeChange}
-        playerFilter={playerFilter}
-        onPlayerFilterChange={setPlayerFilter}
       />
       <FlashGrid
         flashes={flashes}
         viewMode={viewMode}
-        isLoading={isLoading}
-        isFetchingNextPage={isFetchingNextPage}
-        hasNextPage={!!hasNextPage}
+        isLoading={active.isLoading}
+        isFetchingNextPage={active.isFetchingNextPage}
+        hasNextPage={!!active.hasNextPage}
         onLoadMore={handleLoadMore}
       />
     </div>

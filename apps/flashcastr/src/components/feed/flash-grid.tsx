@@ -3,10 +3,10 @@
 import { useEffect, useRef } from "react";
 import { FlashCard } from "./flash-card";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { UnifiedFlash, ViewMode } from "@/types/flash";
+import type { NormalizedFlash, ViewMode } from "@/types/flash";
 
 interface FlashGridProps {
-  flashes: UnifiedFlash[];
+  flashes: NormalizedFlash[];
   viewMode: ViewMode;
   isLoading: boolean;
   isFetchingNextPage: boolean;

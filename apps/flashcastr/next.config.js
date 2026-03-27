@@ -15,6 +15,10 @@ const nextConfig = {
         hostname: 'fuchsia-rich-lungfish-648.mypinata.cloud',
         pathname: '/ipfs/**',
       },
+      {
+        protocol: 'https',
+        hostname: '**',
+      },
     ],
   },
 };

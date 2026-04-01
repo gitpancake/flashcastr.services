@@ -26,7 +26,7 @@ Space Invaders API
 | **image-engine** | Downloads images, pins to IPFS via Pinata, publishes `IMAGE_PINNED` | Digital Ocean |
 | **database-engine** | Batch inserts flashes into Postgres, publishes `FLASH_STORED` | Railway |
 | **neynar-engine** | Casts to Farcaster via Neynar SDK, publishes `FLASH_CASTED` + retry worker | Railway |
-| **api** | GraphQL API (Apollo Server v4) with WebSocket subscriptions, serves the Flashcastr frontend | Railway |
+| **api** | GraphQL API (Apollo Server v4) with WebSocket subscriptions | Railway |
 
 ### RabbitMQ Topology
 

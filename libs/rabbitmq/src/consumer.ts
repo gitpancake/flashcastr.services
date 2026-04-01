@@ -108,7 +108,7 @@ export abstract class FlashcastrConsumer<T = unknown> {
 
     const channel = this.channel;
 
-    channel.consume(
+    await channel.consume(
       this.queue,
       async (msg) => {
         if (!msg) return;

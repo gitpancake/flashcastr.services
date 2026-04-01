@@ -203,17 +203,16 @@ async function fetchAndPublish(): Promise<void> {
 const metricsPort = intEnv("METRICS_PORT", 9090);
 startMetricsServer(registry, metricsPort);
 
-// Start users consumer (listens for users.broadcast from database-engine)
+// Start users consumer, THEN request users (consumer must be listening before the response arrives)
 const usersConsumer = new FlashEngineUsersConsumer();
-usersConsumer.startConsuming().catch((err) => {
-  log.error("Failed to start users consumer:", err);
-});
-
-// Request users from database-engine
-publisher.publish(ROUTING_KEYS.USERS_REQUEST, {}).then(() => {
+usersConsumer.startConsuming().then(async () => {
+  // Consumer is now registered — safe to request users
+  await publisher.publish(ROUTING_KEYS.USERS_REQUEST, {});
   usersRequestTotal.inc();
   log.info("Published users.request to database-engine");
-}).catch((err) => log.error("Failed to publish users.request:", err));
+}).catch((err) => {
+  log.error("Failed to start users consumer or request users:", err);
+});
 
 // Run immediately once (processes non-Paris flashes even without users)
 fetchAndPublish().catch((err) => log.error("Initial fetch failed:", err));
@@ -222,6 +221,14 @@ fetchAndPublish().catch((err) => log.error("Initial fetch failed:", err));
 const schedule = process.env.CRON_SCHEDULE || "*/5 * * * *";
 cron.schedule(schedule, () => {
   fetchAndPublish().catch((err) => log.error("Scheduled fetch failed:", err));
+});
+
+// Re-request users every 30 minutes as a safety net against missed broadcasts
+cron.schedule("*/30 * * * *", () => {
+  publisher.publish(ROUTING_KEYS.USERS_REQUEST, {}).then(() => {
+    usersRequestTotal.inc();
+    log.info("Periodic users re-request published");
+  }).catch((err) => log.error("Failed to publish periodic users.request:", err));
 });
 
 log.info(`flash-engine started (schedule: ${schedule})`);

@@ -56,6 +56,13 @@ export const typeDefs = `#graphql
     message: String
   }
 
+  type SignerStatusResponse {
+    ok: Boolean!
+    status: String!
+    fid: Int
+    message: String
+  }
+
   type TrendingCity {
     city: String!
     count: Int!
@@ -142,6 +149,7 @@ export const typeDefs = `#graphql
     getTrendingCities(excludeParis: Boolean = true, hours: Int = 6): [TrendingCity!]!
     getLeaderboard(limit: Int = 100): [LeaderboardEntry!]!
     pollSignupStatus(signer_uuid: String!, username: String!): PollSignupStatusResponse!
+    checkSignerStatus(fid: Int!): SignerStatusResponse!
     progress(fid: Int!, days: Int!, order: String = "ASC"): [DailyProgress!]!
     flashIdentifications(ipfs_cid: String, matched_flash_id: String, limit: Int = 50): [FlashIdentification!]!
     flashIdentification(id: Int!): FlashIdentification

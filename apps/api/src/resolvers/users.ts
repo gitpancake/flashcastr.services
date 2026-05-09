@@ -9,6 +9,8 @@ import {
 } from "../metrics.js";
 import neynarClient from "../neynar/client.js";
 import { FlashcastrUsersDb } from "@flashcastr/database";
+import { decrypt } from "@flashcastr/crypto";
+import { requireEnv } from "@flashcastr/config";
 
 export function createUserResolvers(pool: Pool) {
   const usersDb = new FlashcastrUsersDb(pool);
@@ -32,6 +34,46 @@ export function createUserResolvers(pool: Pool) {
 
         const result = await pool.query(sql, params);
         return result.rows;
+      },
+
+      checkSignerStatus: async (_: unknown, args: { fid: number }) => {
+        if (typeof args.fid !== "number") {
+          throw new GraphQLError("fid is required.", { extensions: { code: "BAD_USER_INPUT" } });
+        }
+
+        const user = await usersDb.getByFid(args.fid);
+        if (!user || !user.signer_uuid) {
+          return { ok: false, status: "NO_SIGNER", fid: args.fid, message: "No signer stored for this user." };
+        }
+
+        let signerUuid: string;
+        try {
+          signerUuid = decrypt(user.signer_uuid, requireEnv("SIGNER_ENCRYPTION_KEY"));
+        } catch (error) {
+          console.error(`[checkSignerStatus] Failed to decrypt signer for fid ${args.fid}:`, error);
+          return { ok: false, status: "DECRYPT_ERROR", fid: args.fid, message: "Failed to decrypt stored signer." };
+        }
+
+        try {
+          neynarRequestsTotal.inc({ endpoint: "lookupSigner", status: "attempt" });
+          const neynarSigner = await neynarClient.lookupSigner({ signerUuid });
+          neynarRequestsTotal.inc({ endpoint: "lookupSigner", status: "success" });
+          return {
+            ok: neynarSigner.status === "approved",
+            status: neynarSigner.status.toUpperCase(),
+            fid: neynarSigner.fid ?? args.fid,
+            message: null,
+          };
+        } catch (error) {
+          neynarRequestsTotal.inc({ endpoint: "lookupSigner", status: "error" });
+          console.error(`[checkSignerStatus] Neynar lookup failed for fid ${args.fid}:`, error);
+          return {
+            ok: false,
+            status: "NEYNAR_LOOKUP_ERROR",
+            fid: args.fid,
+            message: error instanceof Error ? error.message : "Neynar lookup failed.",
+          };
+        }
       },
 
       pollSignupStatus: async (_: unknown, args: { signer_uuid: string; username: string }) => {

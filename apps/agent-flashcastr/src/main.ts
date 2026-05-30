@@ -34,8 +34,9 @@ import type {
   FlashcastrDisplay,
   FarcasterCastEngagementPayload,
 } from '@life-os/shared';
-import { Counter, createEventsPublishedCounter, createAIClient } from '@life-os/shared';
+import { Counter, Gauge, createEventsPublishedCounter, createAIClient, farcasterAccounts } from '@life-os/shared';
 import { farcasterEnvSchema } from '@life-os/shared';
+import { validateSigner } from './signer-check.js';
 import { eq, and, gte, desc } from 'drizzle-orm';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -67,6 +68,7 @@ let repliesSent: Counter;
 let likesSent: Counter;
 let webhookReceived: Counter;
 let webhookRejected: Counter;
+let signerValid: Gauge;
 
 // Neynar read client (story 02 ingest). Reuses NEYNAR_API_KEY already
 // required by dispatch-cast.ts — no new env. Constructed once in onStart.
@@ -805,6 +807,35 @@ createProcess({
     webhookReceived = new Counter({ name: 'flashcastr_webhook_received_total', help: 'Neynar cast.created webhooks accepted (valid signature, persisted)', registers: [r] });
     webhookRejected = new Counter({ name: 'flashcastr_webhook_rejected_total', help: 'Neynar webhook requests rejected (missing/invalid X-Neynar-Signature)', registers: [r] });
     ctx.ai = createAIClient({ registry: r, usagePublisher: ctx.publisher as AIUsagePublisher, source: PROCESS_NAME });
+
+    // Boot signer-validity check. Catches a FARCASTER_ENCRYPTION_KEY that can't
+    // decrypt the stored signer (common after migrating the account row to a new
+    // deploy) before it silently breaks every reply/like at publish time.
+    signerValid = new Gauge({ name: 'flashcastr_signer_valid', help: '1 if the @flashcastr signer decrypts and derives a valid Ed25519 key', registers: [r] });
+    const [signerAccount] = await ctx.agentDb!
+      .select()
+      .from(farcasterAccounts)
+      .where(eq(farcasterAccounts.handle, AGENT_DOMAIN))
+      .limit(1);
+    if (!signerAccount) {
+      signerValid.set(0);
+      console.warn(`[${PROCESS_NAME}] Signer check skipped — no farcaster_accounts row for @${AGENT_DOMAIN}`);
+    } else {
+      const check = await validateSigner(
+        signerAccount.signerPrivateKey,
+        process.env.FARCASTER_ENCRYPTION_KEY,
+        signerAccount.fid,
+        process.env.HUB_HTTP_URL ?? 'https://hub-api.neynar.com',
+      );
+      signerValid.set(check.ok ? 1 : 0);
+      if (!check.ok) {
+        console.error(`[${PROCESS_NAME}] SIGNER CHECK FAILED — cannot cast/reply/like: ${check.reason}`);
+      } else if (check.activeOnHub === false) {
+        console.warn(`[${PROCESS_NAME}] Signer decrypts OK (${check.publicKeyHex}) but is NOT among active on-chain signers for FID ${signerAccount.fid} — casts will be rejected by the network`);
+      } else {
+        console.log(`[${PROCESS_NAME}] Signer OK (${check.publicKeyHex})${check.activeOnHub ? ' — active on Hub' : ''}`);
+      }
+    }
   },
 
   // Real-time inbound: a Neynar webhook pushes cast.created here so a reply

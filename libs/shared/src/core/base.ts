@@ -1,8 +1,6 @@
 import { connectRabbitMQ, disconnectRabbitMQ, createPublisher, createSubscriber, onReconnect } from '../rabbitmq/index.js';
 import { getAgentDb, runAgentMigrations, disconnectAgentDb } from '../db/agent-db.js';
 import type { AgentDb } from '../db/agent-db.js';
-import { openLocalDb, runLocalMigrations } from '../db/local.js';
-import type { LocalDb, LocalDbHandle } from '../db/local.js';
 import { DEFAULT_TIMEZONE } from '../config/timezone.js';
 import { createMetricsRegistry, startMetricsServer, Counter, Histogram, Gauge } from '../metrics/index.js';
 import type { Registry } from '../metrics/index.js';
@@ -10,13 +8,6 @@ import { ROUTING_KEYS } from '../events/routing-keys.js';
 import { createLifeEvent } from '../events/types.js';
 import type { LifeEvent, ContentReadyPayload, AgentHeartbeatPayload, AgentMetaPayload, AgentErrorPayload, ReconcileRequestPayload, ReconcileProgressPayload, ReconcileCompletePayload } from '../events/types.js';
 import type { AIClient } from './ai-client.js';
-
-export interface LocalDbConfig {
-  /** Path to the SQLite file (e.g. /data/local.db). Created if it doesn't exist. */
-  sqlitePath: string;
-  /** Path to the Drizzle migrations folder for this service's local schema. */
-  migrationsFolder: string;
-}
 
 export interface AgentDbConfig {
   /** Path to the Drizzle migrations folder for this agent's PG schema. */
@@ -27,8 +18,6 @@ export interface ProcessConfig {
   name: string;
   checkIntervalMs?: number;
   metricsPort?: number;
-  /** Optional local SQLite database (display-sync only). */
-  localDb?: LocalDbConfig;
   /** Per-agent PostgreSQL database. Reads DATABASE_URL for agent DB. */
   agentDb?: AgentDbConfig;
   /** Skip settings loading entirely (OV read + CONFIG_UPDATED subscription). For event-driven services that don't use settings. */
@@ -88,8 +77,6 @@ export interface ProcessConfig {
 export interface ProcessContext {
   /** Agent's own PG (DATABASE_URL) — owned tables. Only available if agentDb config was provided. */
   agentDb?: AgentDb;
-  /** Local SQLite — only used by display-sync. */
-  localDb?: LocalDb;
   publisher: ReturnType<typeof createPublisher>;
   channel: Awaited<ReturnType<typeof connectRabbitMQ>>;
   settings: Record<string, string>;
@@ -235,7 +222,7 @@ async function subscribeReconcile(
 }
 
 export async function createProcess(config: ProcessConfig): Promise<void> {
-  const { name, checkIntervalMs = 15 * 60 * 1000, metricsPort, localDb: localDbConfig, agentDb: agentDbConfig, skipSettings, standalone, subscriptions, onTick, onStart, setupPush, reconcile } = config;
+  const { name, checkIntervalMs = 15 * 60 * 1000, metricsPort, agentDb: agentDbConfig, skipSettings, standalone, subscriptions, onTick, onStart, setupPush, reconcile } = config;
   const needsSettings = !skipSettings;
 
   // Metrics
@@ -289,16 +276,6 @@ export async function createProcess(config: ProcessConfig): Promise<void> {
     console.log(`${name} agent DB ready`);
   }
 
-  // Local SQLite (optional — display-sync only)
-  let localDb: LocalDb | undefined;
-  let localDbHandle: LocalDbHandle | undefined;
-  if (localDbConfig) {
-    localDbHandle = openLocalDb(localDbConfig.sqlitePath);
-    localDb = localDbHandle.db;
-    runLocalMigrations(localDb, localDbConfig.migrationsFolder);
-    console.log(`${name} local DB ready at ${localDbConfig.sqlitePath}`);
-  }
-
   // Core setup. In standalone mode there is no broker: ctx.channel is undefined
   // and ctx.publisher swallows every publish so existing emit call-sites stay intact.
   const channel = standalone
@@ -309,7 +286,7 @@ export async function createProcess(config: ProcessConfig): Promise<void> {
     : createPublisher(channel);
   const timezone = process.env.TIMEZONE ?? DEFAULT_TIMEZONE;
 
-  const ctx: ProcessContext = { agentDb, localDb, publisher, channel, settings: {}, timezone, registry };
+  const ctx: ProcessContext = { agentDb, publisher, channel, settings: {}, timezone, registry };
 
   // ── Agent heartbeat / meta / error helpers (Stream C, LOS-258) ──────────
   const { agentMeta: metaConfig, onBackfill } = config;
@@ -609,7 +586,6 @@ export async function createProcess(config: ProcessConfig): Promise<void> {
     if (pushCleanup) {
       await pushCleanup.close();
     }
-    localDbHandle?.close();
     await disconnectAgentDb();
     if (!standalone) await disconnectRabbitMQ();
     process.exit(0);

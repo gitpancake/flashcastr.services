@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Must be set before importing the module under test
-process.env.CONTEXT_SERVICE_URL = 'http://service-context';
+process.env.OPENVIKING_URL = 'http://openviking';
 
-// ovReadProxy is private — test its retry behavior via readFromOV, which calls ovRead → ovReadProxy.
+// ovReadDirect is private — test its retry behavior via readFromOV, which calls ovRead → ovReadDirect.
 // The TTL cache is cleared in beforeEach so each test starts cold.
 import * as contextStore from './context-store.js';
 
-describe('ovReadProxy retry behaviour', () => {
+describe('ovReadDirect retry behaviour', () => {
   beforeEach(() => {
     // Reset TTL cache between tests so each test starts cold
     contextStore.invalidateContextCache();
@@ -22,7 +22,7 @@ describe('ovReadProxy retry behaviour', () => {
     vi.stubGlobal('fetch', vi.fn(async () => {
       callCount++;
       if (callCount === 1) throw new TypeError('fetch failed');
-      return new Response(JSON.stringify({ content: 'hello' }), { status: 200 });
+      return new Response(JSON.stringify({ result: 'hello' }), { status: 200 });
     }));
 
     const result = await contextStore.readFromOV('/test/path.md');

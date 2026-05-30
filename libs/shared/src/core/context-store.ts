@@ -39,17 +39,29 @@ export interface UserContext {
   goals: Record<string, string>;
 }
 
-// ─── Context service proxy client ────────────────────────────────────────────
-// All agents/services must set CONTEXT_SERVICE_URL. No direct-OV fallback.
+// ─── OpenViking direct client ────────────────────────────────────────────────
+// This service talks to OpenViking directly — it holds OV creds itself, with no
+// service-context proxy. Transport ported from service-context/src/ov-client.ts.
 
-function getContextServiceUrl(): string {
-  const raw = process.env.CONTEXT_SERVICE_URL;
-  if (!raw) throw new Error('CONTEXT_SERVICE_URL not set — cannot access context store');
-  const withScheme = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`;
-  return withScheme.replace(/\/$/, '');
+function getOvUrl(): string {
+  const url = process.env.OPENVIKING_URL;
+  if (!url) throw new Error('OPENVIKING_URL not set — cannot access context store');
+  return url.replace(/\/$/, '');
 }
 
-// ── Proxy client ──────────────────────────────────────────────────────────────
+function getOvHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const apiKey = process.env.OPENVIKING_API_KEY;
+  if (apiKey) headers['X-API-Key'] = apiKey;
+  const user = process.env.OPENVIKING_BASIC_USER;
+  const pass = process.env.OPENVIKING_BASIC_PASS;
+  if (user && pass) {
+    headers['Authorization'] = `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
+  }
+  return headers;
+}
+
+// ── Retry wrapper ───────────────────────────────────────────────────────────
 
 const RETRY_DELAYS_MS = [100, 500];
 
@@ -79,54 +91,106 @@ async function withRetry<T>(
   return fallback;
 }
 
-async function ovReadProxy(base: string, uri: string): Promise<string | null> {
+// Raw OV read: try direct + {uri}/content.md, then reassemble chunked docs.
+async function ovReadDirect(uri: string): Promise<string | null> {
   return withRetry(
     async () => {
-      const params = new URLSearchParams({ uri });
-      const res = await fetch(`${base}/read?${params}`);
-      if (res.status >= 400 && res.status < 500) {
-        console.warn(`[context-store] proxy read ${uri}: HTTP ${res.status}`);
-        return null;
+      const uris = [uri, `${uri}/content.md`];
+      for (const u of uris) {
+        const params = new URLSearchParams({ uri: u });
+        const res = await fetch(`${getOvUrl()}/api/v1/content/read?${params}`, { headers: getOvHeaders() });
+        if (!res.ok) {
+          if (res.status >= 500) throw new Error(`HTTP ${res.status}`);
+          continue; // 404 etc — try next candidate
+        }
+        const data = await res.json() as { result?: string };
+        if (data.result) return data.result;
       }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json() as { content: string | null };
-      return data.content;
+
+      // OV chunks large documents into subdirectories — reassemble leaf files.
+      const listParams = new URLSearchParams({ uri, recursive: 'true' });
+      const listRes = await fetch(`${getOvUrl()}/api/v1/fs/ls?${listParams}`, { headers: getOvHeaders() });
+      if (!listRes.ok) return null;
+
+      const listData = await listRes.json() as { result?: Array<{ uri: string; isDir: boolean }> };
+      const leaves = (listData.result ?? []).filter(e => !e.isDir);
+      if (leaves.length === 0) return null;
+
+      const chunks = await Promise.all(leaves.map(async (leaf) => {
+        const leafUri = leaf.uri.replace(/^viking:\/\//, '/');
+        const params = new URLSearchParams({ uri: leafUri });
+        const res = await fetch(`${getOvUrl()}/api/v1/content/read?${params}`, { headers: getOvHeaders() });
+        if (!res.ok) return '';
+        const data = await res.json() as { result?: string };
+        return data.result ?? '';
+      }));
+
+      return chunks.filter(Boolean).join('\n\n') || null;
     },
     null,
-    `proxy read ${uri}`,
+    `ov read ${uri}`,
   );
 }
 
-async function ovWriteProxy(base: string, content: string, to: string): Promise<{ ok: boolean; status?: number }> {
+// OV add_resource uses `path` for content and `to` for the destination URI,
+// and rejects writes to existing URIs — delete first to allow updates.
+async function ovWriteDirect(content: string, to: string): Promise<{ ok: boolean; status?: number }> {
   try {
-    const res = await fetch(`${base}/write`, {
+    await fetch(`${getOvUrl()}/api/v1/fs?uri=${encodeURIComponent(to)}&recursive=true`, {
+      method: 'DELETE',
+      headers: getOvHeaders(),
+    }).catch(() => {}); // ignore — resource may not exist yet
+
+    const res = await fetch(`${getOvUrl()}/api/v1/resources`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: to, content }),
+      headers: getOvHeaders(),
+      body: JSON.stringify({ path: content, to }),
     });
-    if (!res.ok) console.warn(`[context-store] proxy write ${to}: HTTP ${res.status}`);
+    if (!res.ok) console.warn(`[context-store] ov write ${to}: HTTP ${res.status}`);
     return { ok: res.ok, status: res.status };
   } catch (err) {
-    console.warn(`[context-store] proxy write ${to}: ${(err as Error).message}`);
+    console.warn(`[context-store] ov write ${to}: ${(err as Error).message}`);
     return { ok: false };
   }
 }
 
-async function ovListProxy(base: string, uri: string): Promise<string[]> {
+async function ovDeleteDirect(uri: string): Promise<{ ok: boolean; status?: number }> {
+  try {
+    const res = await fetch(`${getOvUrl()}/api/v1/fs?uri=${encodeURIComponent(uri)}&recursive=true`, {
+      method: 'DELETE',
+      headers: getOvHeaders(),
+    });
+    const ok = res.ok || res.status === 404; // 404 fine — may not exist
+    if (!ok) console.warn(`[context-store] ov delete ${uri}: HTTP ${res.status}`);
+    return { ok, status: res.status };
+  } catch (err) {
+    console.warn(`[context-store] ov delete ${uri}: ${(err as Error).message}`);
+    return { ok: false };
+  }
+}
+
+// OV stores documents as directories containing content.md — return the .md
+// directory URIs (the documents), not raw files.
+async function ovListDirect(uri: string): Promise<string[]> {
   return withRetry(
     async () => {
       const params = new URLSearchParams({ uri });
-      const res = await fetch(`${base}/list?${params}`);
-      if (res.status >= 400 && res.status < 500) {
-        console.warn(`[context-store] proxy list ${uri}: HTTP ${res.status}`);
-        return [];
+      const res = await fetch(`${getOvUrl()}/api/v1/fs/ls?${params}`, { headers: getOvHeaders() });
+      if (!res.ok) {
+        if (res.status >= 500) throw new Error(`HTTP ${res.status}`);
+        return []; // 404 etc — treat as empty
       }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json() as { uris: string[] };
-      return data.uris ?? [];
+      const data = await res.json() as { result?: Array<{ uri: string; isDir: boolean; rel_path?: string }> };
+      return (data.result ?? [])
+        .filter(e => {
+          if (!e.isDir) return false;
+          const name = e.rel_path ?? e.uri.split('/').pop() ?? '';
+          return name.endsWith('.md');
+        })
+        .map(e => e.uri.replace(/^viking:\/\//, '/'));
     },
     [],
-    `proxy list ${uri}`,
+    `ov list ${uri}`,
   );
 }
 
@@ -134,7 +198,7 @@ async function ovRead(uri: string): Promise<string | null> {
   const cacheKey = `read:${uri}`;
   const hit = getCached<string | null>(cacheKey);
   if (hit !== undefined) return hit;
-  const result = await ovReadProxy(getContextServiceUrl(), uri);
+  const result = await ovReadDirect(uri);
   // Only cache successful reads — null (missing/error) should not be locked in for 5min
   if (result !== null) setCached(cacheKey, result);
   return result;
@@ -143,32 +207,20 @@ async function ovRead(uri: string): Promise<string | null> {
 async function ovWrite(content: string, to: string): Promise<{ ok: boolean; status?: number }> {
   // Writes are never cached — go direct and invalidate any cached read for this uri.
   _cache.delete(`read:${to}`);
-  return ovWriteProxy(getContextServiceUrl(), content, to);
-}
-
-async function ovDeleteProxy(base: string, uri: string): Promise<{ ok: boolean; status?: number }> {
-  try {
-    const params = new URLSearchParams({ uri });
-    const res = await fetch(`${base}/delete?${params}`, { method: 'DELETE' });
-    if (!res.ok) console.warn(`[context-store] proxy delete ${uri}: HTTP ${res.status}`);
-    return { ok: res.ok, status: res.status };
-  } catch (err) {
-    console.warn(`[context-store] proxy delete ${uri}: ${(err as Error).message}`);
-    return { ok: false };
-  }
+  return ovWriteDirect(content, to);
 }
 
 async function ovDelete(uri: string): Promise<{ ok: boolean; status?: number }> {
   _cache.delete(`read:${uri}`);
   _cache.delete(`list:${uri.substring(0, uri.lastIndexOf('/'))}`);
-  return ovDeleteProxy(getContextServiceUrl(), uri);
+  return ovDeleteDirect(uri);
 }
 
 async function ovList(uri: string): Promise<string[]> {
   const cacheKey = `list:${uri}`;
   const hit = getCached<string[]>(cacheKey);
   if (hit !== undefined) return hit;
-  const result = await ovListProxy(getContextServiceUrl(), uri);
+  const result = await ovListDirect(uri);
   // Don't cache empty arrays — could be a transient failure, not a genuinely empty directory
   if (result.length > 0) setCached(cacheKey, result);
   return result;

@@ -29,6 +29,8 @@ import type {
   FlashcastrRoundupEvent,
   FlashcastrStats,
   ContentReadyPayload,
+  ContentDomain,
+  AIUsagePublisher,
   FlashcastrDisplay,
   FarcasterCastEngagementPayload,
 } from '@life-os/shared';
@@ -102,7 +104,7 @@ async function scrapeAndStore(ctx: ProcessContext): Promise<number> {
         routingKey: ROUTING_KEYS.CONTENT_READY_FLASHCASTR,
         source: PROCESS_NAME,
         payload: {
-          domain: AGENT_DOMAIN,
+          domain: AGENT_DOMAIN as ContentDomain,
           action: 'create',
           entityId: result[0].id,
           forDate: event.eventDate,
@@ -802,7 +804,7 @@ createProcess({
     likesSent = new Counter({ name: 'flashcastr_likes_sent_total', help: 'Visible "seen you" LIKEs submitted on inbound casts after a successful reply', registers: [r] });
     webhookReceived = new Counter({ name: 'flashcastr_webhook_received_total', help: 'Neynar cast.created webhooks accepted (valid signature, persisted)', registers: [r] });
     webhookRejected = new Counter({ name: 'flashcastr_webhook_rejected_total', help: 'Neynar webhook requests rejected (missing/invalid X-Neynar-Signature)', registers: [r] });
-    ctx.ai = createAIClient({ registry: r, usagePublisher: ctx.publisher, source: PROCESS_NAME });
+    ctx.ai = createAIClient({ registry: r, usagePublisher: ctx.publisher as AIUsagePublisher, source: PROCESS_NAME });
   },
 
   // Real-time inbound: a Neynar webhook pushes cast.created here so a reply

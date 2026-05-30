@@ -3,13 +3,12 @@
   "compilerOptions": {
     "outDir": "../../dist/apps/agent-flashcastr",
     "rootDir": "src",
+    "composite": false,
+    "declarationMap": false,
+    "emitDeclarationOnly": false,
+    "noEmit": true,
     "types": ["node", "vitest/globals"]
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["src/**/*.spec.ts", "src/**/*.test.ts"],
-  "references": [
-    {
-      "path": "../../libs/shared"
-    }
-  ]
+  "exclude": ["src/**/*.spec.ts", "src/**/*.test.ts"]
 }

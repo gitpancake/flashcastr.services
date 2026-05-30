@@ -49,7 +49,7 @@ async function graphqlQuery(apiUrl: string, query: string, variables?: Record<st
     body: JSON.stringify({ query, variables }),
   });
   if (!response.ok) throw new Error(`Flashcastr API ${response.status}: ${response.statusText}`);
-  const data = await response.json();
+  const data = await response.json() as { data?: any; errors?: Array<{ message: string }> };
   if (data.errors?.length) throw new Error(`GraphQL: ${data.errors[0].message}`);
   return data.data;
 }

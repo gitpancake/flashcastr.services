@@ -4,6 +4,7 @@ import {
   NobleEd25519Signer,
   FarcasterNetwork,
   ReactionType,
+  CastType,
   Message,
 } from '@farcaster/core';
 import type { CastEmbed } from '@life-os/shared';
@@ -60,6 +61,7 @@ export async function publishCast(
 
   // Build the cast body
   const castBody: Parameters<typeof makeCastAdd>[0] = {
+    type: CastType.CAST,
     text,
     embeds: encodeEmbeds(options?.embeds ?? []),
     embedsDeprecated: [],
@@ -104,7 +106,7 @@ export async function publishCast(
     body: messageBytes,
   });
 
-  const result = await response.json();
+  const result = await response.json() as { hash?: string; errCode?: string; message?: string };
 
   if (!response.ok || !result.hash) {
     const errorMsg = result.errCode
@@ -160,7 +162,7 @@ export async function publishRecast(
     body: messageBytes,
   });
 
-  const result = await response.json();
+  const result = await response.json() as { hash?: string; errCode?: string; message?: string };
 
   if (!response.ok || !result.hash) {
     const errorMsg = result.errCode
@@ -219,7 +221,7 @@ export async function publishLike(
     body: messageBytes,
   });
 
-  const result = await response.json();
+  const result = await response.json() as { hash?: string; errCode?: string; message?: string };
 
   if (!response.ok || !result.hash) {
     const errorMsg = result.errCode

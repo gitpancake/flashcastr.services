@@ -177,11 +177,19 @@ export class AIClient {
   private source: string;
 
   constructor(config?: AIClientConfig) {
-    const oauthToken = getRequiredEnv('CLAUDE_CODE_OAUTH_TOKEN');
     // maxRetries: 0 — we own 429 backoff in complete() so retries honor
     // server-side retry-after and don't double-stack with SDK's own loop.
-    this.client = new Anthropic({ authToken: oauthToken, maxRetries: 0 });
-    console.log(`[ai-client] ${config?.source ?? 'unknown'}: auth=CLAUDE_CODE_OAUTH_TOKEN (Claude.ai subscription)`);
+    // Prefer ANTHROPIC_API_KEY (standard API billing, x-api-key); fall back to
+    // CLAUDE_CODE_OAUTH_TOKEN (Claude.ai subscription, Authorization: Bearer).
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (apiKey) {
+      this.client = new Anthropic({ apiKey, maxRetries: 0 });
+      console.log(`[ai-client] ${config?.source ?? 'unknown'}: auth=ANTHROPIC_API_KEY (API billing)`);
+    } else {
+      const oauthToken = getRequiredEnv('CLAUDE_CODE_OAUTH_TOKEN');
+      this.client = new Anthropic({ authToken: oauthToken, maxRetries: 0 });
+      console.log(`[ai-client] ${config?.source ?? 'unknown'}: auth=CLAUDE_CODE_OAUTH_TOKEN (Claude.ai subscription)`);
+    }
     this.usagePublisher = config?.usagePublisher ?? null;
     this.source = config?.source ?? 'unknown';
 

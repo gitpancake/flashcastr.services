@@ -34,6 +34,15 @@ export interface ProcessConfig {
   /** Skip settings loading entirely (OV read + CONFIG_UPDATED subscription). For event-driven services that don't use settings. */
   skipSettings?: boolean;
   /**
+   * Broker-less mode. No RabbitMQ connect, no publish/subscribe, no reconcile,
+   * no CONFIG_UPDATED/tick-trigger subscriptions. ctx.publisher becomes a no-op
+   * and ctx.channel is undefined. Settings (when not skipped) still load directly
+   * from OV. The poll loop, agentDb, metrics, setupPush, and daily-flags all work.
+   * Used by services hauled out of the life-os bus (e.g. agent-flashcastr in
+   * flashcastr.services).
+   */
+  standalone?: boolean;
+  /**
    * Agent identity for heartbeat + meta broadcasts. When set, createProcess()
    * auto-emits heartbeat after every tick and meta on startup.
    * Agents can also call ctx.publishAgentMeta() after nightly refinement.
@@ -226,7 +235,7 @@ async function subscribeReconcile(
 }
 
 export async function createProcess(config: ProcessConfig): Promise<void> {
-  const { name, checkIntervalMs = 15 * 60 * 1000, metricsPort, localDb: localDbConfig, agentDb: agentDbConfig, skipSettings, subscriptions, onTick, onStart, setupPush, reconcile } = config;
+  const { name, checkIntervalMs = 15 * 60 * 1000, metricsPort, localDb: localDbConfig, agentDb: agentDbConfig, skipSettings, standalone, subscriptions, onTick, onStart, setupPush, reconcile } = config;
   const needsSettings = !skipSettings;
 
   // Metrics
@@ -290,9 +299,14 @@ export async function createProcess(config: ProcessConfig): Promise<void> {
     console.log(`${name} local DB ready at ${localDbConfig.sqlitePath}`);
   }
 
-  // Core setup
-  const channel = await connectRabbitMQ();
-  const publisher = createPublisher(channel);
+  // Core setup. In standalone mode there is no broker: ctx.channel is undefined
+  // and ctx.publisher swallows every publish so existing emit call-sites stay intact.
+  const channel = standalone
+    ? (undefined as unknown as Awaited<ReturnType<typeof connectRabbitMQ>>)
+    : await connectRabbitMQ();
+  const publisher = standalone
+    ? ({ publish: async () => {} } as ReturnType<typeof createPublisher>)
+    : createPublisher(channel);
   const timezone = process.env.TIMEZONE ?? DEFAULT_TIMEZONE;
 
   const ctx: ProcessContext = { agentDb, localDb, publisher, channel, settings: {}, timezone, registry };
@@ -360,17 +374,20 @@ export async function createProcess(config: ProcessConfig): Promise<void> {
     // Load settings directly from OV (no orchestrator middleman)
     await loadSettingsFromOV(ctx, name);
 
-    // Subscribe to CONFIG_UPDATED — re-read OV on any settings change
-    await createSubscriber(channel, {
-      queueName: `${name}.config-updates`,
-      patterns: [ROUTING_KEYS.CONFIG_UPDATED],
-      handler: async () => {
-        console.log(`[${name}] Settings changed — re-reading from OV`);
-        const { invalidateContextCache } = await import('./context-store.js');
-        invalidateContextCache();
-        await loadSettingsFromOV(ctx, name);
-      },
-    });
+    // Subscribe to CONFIG_UPDATED — re-read OV on any settings change.
+    // Skipped in standalone mode (no broker); settings are read once at startup.
+    if (!standalone) {
+      await createSubscriber(channel, {
+        queueName: `${name}.config-updates`,
+        patterns: [ROUTING_KEYS.CONFIG_UPDATED],
+        handler: async () => {
+          console.log(`[${name}] Settings changed — re-reading from OV`);
+          const { invalidateContextCache } = await import('./context-store.js');
+          invalidateContextCache();
+          await loadSettingsFromOV(ctx, name);
+        },
+      });
+    }
   }
 
   // Run startup hook BEFORE registering subscribers. RabbitMQ starts delivering
@@ -391,7 +408,8 @@ export async function createProcess(config: ProcessConfig): Promise<void> {
   }
 
   // Set up event subscriptions (after onStart so handlers see fully-populated ctx).
-  if (subscriptions) {
+  // Skipped entirely in standalone mode — no broker to consume from.
+  if (subscriptions && !standalone) {
     for (const sub of subscriptions) {
       await createSubscriber(channel, {
         queueName: sub.queueName,
@@ -403,7 +421,7 @@ export async function createProcess(config: ProcessConfig): Promise<void> {
 
   // Reconcile subscription — admin can trigger agents to republish display data.
   // Each agent subscribes on its own named queue so '*' broadcasts reach all agents.
-  if (reconcile) {
+  if (reconcile && !standalone) {
     await subscribeReconcile(channel, name, reconcile, ctx);
 
     // Auto-reconcile on startup: republish all display state so display-sync is
@@ -438,8 +456,8 @@ export async function createProcess(config: ProcessConfig): Promise<void> {
     })();
   }
 
-  // Re-wire publisher + all subscribers on reconnect
-  onReconnect(async (newChannel) => {
+  // Re-wire publisher + all subscribers on reconnect (no-op in standalone mode)
+  if (!standalone) onReconnect(async (newChannel) => {
     console.log(`${name} re-wiring after RabbitMQ reconnect...`);
     ctx.channel = newChannel;
     ctx.publisher = createPublisher(newChannel);
@@ -554,8 +572,8 @@ export async function createProcess(config: ProcessConfig): Promise<void> {
     }
   }
 
-  // Subscribe to manual tick triggers (gateway → agent)
-  if (metaConfig) {
+  // Subscribe to manual tick triggers (gateway → agent). No broker in standalone.
+  if (metaConfig && !standalone) {
     await createSubscriber(channel, {
       queueName: `${name}.tick-trigger`,
       patterns: [`${ROUTING_KEYS.AGENT_TICK_TRIGGER}.${name}`],
@@ -593,7 +611,7 @@ export async function createProcess(config: ProcessConfig): Promise<void> {
     }
     localDbHandle?.close();
     await disconnectAgentDb();
-    await disconnectRabbitMQ();
+    if (!standalone) await disconnectRabbitMQ();
     process.exit(0);
   };
 

@@ -1,0 +1,11 @@
+{
+  "name": "@flashcastr/agent-flashcastr",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/main.ts",
+  "scripts": {
+    "dev": "npx tsx --watch src/main.ts",
+    "start": "npx tsx src/main.ts"
+  }
+}

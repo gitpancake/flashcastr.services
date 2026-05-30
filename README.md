@@ -27,6 +27,26 @@ Space Invaders API
 | **database-engine** | Batch inserts flashes into Postgres, publishes `FLASH_STORED` | Railway |
 | **neynar-engine** | Casts to Farcaster via Neynar SDK, publishes `FLASH_CASTED` + retry worker | Railway |
 | **api** | GraphQL API (Apollo Server v4) with WebSocket subscriptions | Railway |
+| **agent-flashcastr** | Standalone Farcaster reply bot + domain knowledge base (no RabbitMQ); context from OpenViking directly | Railway |
+
+### agent-flashcastr (standalone)
+
+Migrated from the `life-os` monorepo. Unlike the pipeline engines, it does **not**
+use RabbitMQ — it runs broker-less via `createProcess({ standalone: true })` from
+the vendored `@life-os/shared` lib. It polls Farcaster for mentions/replies of
+`@flashcastr` (with a Neynar `cast.created` webhook for real-time delivery on
+`PORT`), replies in-character, maintains a corrections/knowledge base, and reads
+user/agent context **directly from OpenViking** (`OPENVIKING_URL` + creds) rather
+than proxying through a context service.
+
+What it lost in the move (all were RabbitMQ-coupled): display-sync `CONTENT_READY`,
+content/highlight/roundup request-response, engagement-driven learning signals,
+admin triggers, and AI-usage cost events. The bus call-sites remain in the source
+as inert no-ops, so the integrations can be re-enabled if a broker is reintroduced.
+
+Runs via `tsx` (no build step). Needs its **own** Postgres (`DATABASE_URL`),
+`CLAUDE_CODE_OAUTH_TOKEN`, the `OPENVIKING_*` vars, and Farcaster/Neynar creds —
+see `.env.example`.
 
 ### RabbitMQ Topology
 

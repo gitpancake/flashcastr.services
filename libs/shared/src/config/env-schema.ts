@@ -1,9 +1,11 @@
 import { z } from 'zod';
 
-// Base env vars all services need
+// Base env vars all services need.
+// RABBITMQ_URL optional — broker-less standalone services (e.g. agent-flashcastr
+// in flashcastr.services) run without a message broker.
 export const baseEnvSchema = z.object({
   DATABASE_URL: z.string().min(1),
-  RABBITMQ_URL: z.string().min(1),
+  RABBITMQ_URL: z.string().min(1).optional(),
 });
 
 // Shared fragments — composable building blocks for agent schemas
@@ -22,9 +24,14 @@ export const pubsubOptionalEnvSchema = z.object({
   GOOGLE_APPLICATION_CREDENTIALS_JSON: z.string().optional(),
 });
 
-/** Anthropic auth via Claude.ai subscription OAuth token. Required by every agent that runs AI calls. */
+/**
+ * Anthropic auth. Set ONE: ANTHROPIC_API_KEY (API billing) or
+ * CLAUDE_CODE_OAUTH_TOKEN (Claude.ai subscription). Both optional here —
+ * ai-client prefers the API key and throws at runtime if neither is set.
+ */
 export const anthropicEnvSchema = z.object({
-  CLAUDE_CODE_OAUTH_TOKEN: z.string().min(1),
+  ANTHROPIC_API_KEY: z.string().min(1).optional(),
+  CLAUDE_CODE_OAUTH_TOKEN: z.string().min(1).optional(),
 });
 
 // Email agent specific

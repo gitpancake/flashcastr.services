@@ -64,6 +64,7 @@ All queues have DLQ via `x-dead-letter-exchange: flashcastr.dlx` and `x-max-leng
 - **No temporal coupling:** Old system waited 3 min between storing and casting. New system is fully event-driven — neynar-engine only receives messages after IPFS CID is populated.
 - **Idempotency:** DB uses `ON CONFLICT DO UPDATE`, Pinata deduplicates by content hash, neynar-engine checks for existing `cast_hash` before casting.
 - **Circuit breakers:** image-engine has IPFS circuit breaker (opens after 30 consecutive failures, resets after 5 min).
+- **Consumer recovery:** `FlashcastrConsumer` recovers from *channel* death and broker-side consumer cancellation, not just connection loss — a dead channel on a live TCP connection leaves the process "up" with zero consumers and silently backs up the queue (caused a ~27h image-engine outage, 17k backlog). Connect also races an explicit handshake deadline; amqplib's `timeout` only covers TCP.
 - **Batch processing:** database-engine accumulates messages and batch-inserts (configurable `BATCH_SIZE`, default 50).
 - **Retry:** neynar-engine runs a periodic retry worker (every 5 min) for failed casts from last 7 days.
 

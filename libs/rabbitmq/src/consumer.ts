@@ -7,9 +7,11 @@ export abstract class FlashcastrConsumer<T = unknown> {
   private channel: Channel | null = null;
   private reconnecting: boolean = false;
   private reconnectAttempts: number = 0;
+  private closing: boolean = false;
   private static readonly MAX_RECONNECT_DELAY = 30000;
   private static readonly INITIAL_RECONNECT_DELAY = 1000;
   private static readonly HEARTBEAT_INTERVAL = 30;
+  private static readonly CONNECT_TIMEOUT = 20000;
 
   protected readonly rabbitUrl: string;
   protected readonly queue: string;
@@ -43,11 +45,58 @@ export abstract class FlashcastrConsumer<T = unknown> {
     );
   }
 
+  /**
+   * Drop the current connection/channel without triggering recovery. Listeners
+   * are detached first so the resulting `close` events don't re-enter reconnect().
+   */
+  private async teardown(): Promise<void> {
+    const { connection, channel } = this;
+    this.connection = null;
+    this.channel = null;
+
+    if (channel) {
+      channel.removeAllListeners();
+      try { await channel.close(); } catch { /* already gone */ }
+    }
+    if (connection) {
+      connection.removeAllListeners();
+      try { await connection.close(); } catch { /* already gone */ }
+    }
+  }
+
+  /**
+   * amqplib's own `timeout` only covers the TCP connect — a broker that accepts
+   * the socket but never completes the AMQP handshake leaves the promise pending
+   * forever, which parks the reconnect loop with `reconnecting` stuck true and no
+   * consumer registered. Race an explicit deadline so a hung handshake is retried.
+   */
+  private async connectWithTimeout(url: string): Promise<ChannelModel> {
+    const attempt = connect(url, { timeout: FlashcastrConsumer.CONNECT_TIMEOUT });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`AMQP handshake timed out after ${FlashcastrConsumer.CONNECT_TIMEOUT}ms`)),
+        FlashcastrConsumer.CONNECT_TIMEOUT
+      );
+    });
+
+    try {
+      return await Promise.race([attempt, deadline]);
+    } catch (err) {
+      // If the handshake completes after we gave up, close it rather than leak the socket.
+      attempt.then((c) => c.close().catch(() => {})).catch(() => {});
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async reconnect(): Promise<void> {
-    if (this.reconnecting) return;
+    if (this.reconnecting || this.closing) return;
     this.reconnecting = true;
 
-    while (true) {
+    while (!this.closing) {
       this.reconnectAttempts++;
       const delay = this.getReconnectDelay();
       console.log(
@@ -56,6 +105,7 @@ export abstract class FlashcastrConsumer<T = unknown> {
       await new Promise((resolve) => setTimeout(resolve, delay));
 
       try {
+        await this.teardown();
         await this.connect();
         this.reconnectAttempts = 0;
         this.reconnecting = false;
@@ -69,6 +119,10 @@ export abstract class FlashcastrConsumer<T = unknown> {
         );
       }
     }
+
+    // Only reached when close() flipped `closing` mid-loop — clear the guard so a
+    // future startConsuming() on this instance isn't permanently locked out.
+    this.reconnecting = false;
   }
 
   private async connect(): Promise<void> {
@@ -77,13 +131,14 @@ export abstract class FlashcastrConsumer<T = unknown> {
       "heartbeat",
       String(FlashcastrConsumer.HEARTBEAT_INTERVAL)
     );
-    this.connection = await connect(url.toString());
+    this.connection = await this.connectWithTimeout(url.toString());
 
     this.connection.on("error", (err) => {
       console.error(`[${this.serviceName}] Connection error:`, err.message);
     });
 
     this.connection.on("close", () => {
+      if (this.closing) return;
       console.warn(`[${this.serviceName}] Connection closed — initiating reconnect`);
       this.connection = null;
       this.channel = null;
@@ -103,7 +158,14 @@ export abstract class FlashcastrConsumer<T = unknown> {
     });
 
     this.channel.on("close", () => {
-      console.warn(`[${this.serviceName}] Channel closed`);
+      if (this.closing) return;
+      // A channel can die while the TCP connection stays open (broker-side channel
+      // error, consumer cancelled, queue deleted). Nothing else fires in that case,
+      // so without this the process stays "up" with zero consumers registered and
+      // the queue silently backs up until someone restarts it.
+      console.warn(`[${this.serviceName}] Channel closed — initiating reconnect`);
+      this.channel = null;
+      this.reconnect();
     });
 
     const channel = this.channel;
@@ -111,7 +173,14 @@ export abstract class FlashcastrConsumer<T = unknown> {
     await channel.consume(
       this.queue,
       async (msg) => {
-        if (!msg) return;
+        // amqplib delivers null when the broker cancels the consumer (queue deleted,
+        // node failover). Swallowing it leaves us subscribed to nothing.
+        if (!msg) {
+          if (this.closing) return;
+          console.warn(`[${this.serviceName}] Consumer cancelled by broker — initiating reconnect`);
+          this.reconnect();
+          return;
+        }
 
         try {
           const content = msg.content.toString();
@@ -145,13 +214,7 @@ export abstract class FlashcastrConsumer<T = unknown> {
   }
 
   async close(): Promise<void> {
-    if (this.channel) {
-      try { await this.channel.close(); } catch { /* ignore */ }
-      this.channel = null;
-    }
-    if (this.connection) {
-      try { await this.connection.close(); } catch { /* ignore */ }
-      this.connection = null;
-    }
+    this.closing = true;
+    await this.teardown();
   }
 }

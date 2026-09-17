@@ -54,7 +54,7 @@ export class SignupOperations {
 
     const signerData = await getSignedKey(true);
 
-    log.info(`Signer created for ${username}: uuid=${signerData.signer_uuid} status=${signerData.status}`);
+    log.info(`Signer created for ${username}: status=${signerData.status}`);
 
     return {
       signer_uuid: signerData.signer_uuid,

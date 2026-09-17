@@ -42,6 +42,19 @@ const log = createLogger("api");
 const PORT = intEnv("PORT", 4000);
 const METRICS_PORT = intEnv("METRICS_PORT", 9094);
 const RABBITMQ_URL = optionalEnv("RABBITMQ_URL", "");
+const TRUST_PROXY_HOPS = intEnv("TRUST_PROXY_HOPS", 1);
+const CORS_ORIGINS = optionalEnv("CORS_ORIGINS", "");
+const INTROSPECTION_ENABLED = optionalEnv("GRAPHQL_INTROSPECTION", "true") === "true";
+
+function corsOptions() {
+  if (!CORS_ORIGINS) return undefined;
+  return { origin: CORS_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean) };
+}
+
+function rootFieldName(requestContext: { operation?: { selectionSet: { selections: readonly { kind: string; name?: { value: string } }[] } } }): string {
+  const first = requestContext.operation?.selectionSet.selections.find((s) => s.kind === "Field");
+  return first?.name?.value ?? "unknown";
+}
 
 const pool = getPool();
 
@@ -51,6 +64,7 @@ const schema = makeExecutableSchema({ typeDefs, resolvers });
 
 // Express + HTTP server
 const app = express();
+app.set("trust proxy", TRUST_PROXY_HOPS);
 const httpServer = http.createServer(app);
 
 // WebSocket server for GraphQL subscriptions
@@ -71,7 +85,7 @@ const metricsPlugin: ApolloServerPlugin<BaseContext> = {
     return {
       async didResolveOperation(requestContext) {
         operationType = requestContext.operation?.operation || "unknown";
-        operationName = requestContext.operationName || "anonymous";
+        operationName = rootFieldName(requestContext);
         graphqlRequestsTotal.inc({ operation_type: operationType, operation_name: operationName });
       },
       async willSendResponse() {
@@ -87,7 +101,7 @@ const metricsPlugin: ApolloServerPlugin<BaseContext> = {
 
 const server = new ApolloServer({
   schema,
-  introspection: true,
+  introspection: INTROSPECTION_ENABLED,
   plugins: [
     ApolloServerPluginDrainHttpServer({ httpServer }),
     {
@@ -188,7 +202,7 @@ async function startSubscriptionConsumer(): Promise<amqplib.ChannelModel | null>
 async function main() {
   await server.start();
 
-  app.use(cors());
+  app.use(cors(corsOptions()));
 
   app.use(
     "/graphql",

@@ -1,6 +1,12 @@
 import type { Pool } from "pg";
+import { intEnv } from "@flashcastr/config";
+import { SlidingWindowLimiter, withRateLimit } from "../rate-limit.js";
+
+const ONE_MINUTE_MS = 60 * 1000;
 
 export function createFlashIdentificationResolvers(pool: Pool) {
+  const saveLimiter = new SlidingWindowLimiter(intEnv("RATE_LIMIT_IDENTIFICATION_PER_MIN", 60), ONE_MINUTE_MS);
+
   return {
     Query: {
       flashIdentifications: async (_: unknown, args: { ipfs_cid?: string; matched_flash_id?: string; limit?: number }) => {
@@ -104,7 +110,7 @@ export function createFlashIdentificationResolvers(pool: Pool) {
     },
 
     Mutation: {
-      saveFlashIdentification: async (_: unknown, args: {
+      saveFlashIdentification: withRateLimit("saveFlashIdentification", saveLimiter, async (_: unknown, args: {
         source_ipfs_cid: string;
         matched_flash_id: string;
         matched_flash_name?: string;
@@ -124,7 +130,7 @@ export function createFlashIdentificationResolvers(pool: Pool) {
           [args.source_ipfs_cid, args.matched_flash_id, args.matched_flash_name || null, args.similarity, args.confidence]
         );
         return result.rows[0];
-      },
+      }),
     },
   };
 }

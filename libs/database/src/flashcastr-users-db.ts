@@ -55,4 +55,12 @@ export class FlashcastrUsersDb extends Postgres<FlashcastrUser> {
     );
     if (result.length === 0) throw new Error("No user found with the provided fid to delete");
   }
+
+  async deleteWithFlashes(fid: number): Promise<void> {
+    await this.transaction(async (client) => {
+      await client.query("DELETE FROM flashcastr_flashes WHERE user_fid = $1", [fid]);
+      const deleted = await client.query("DELETE FROM flashcastr_users WHERE fid = $1 RETURNING fid", [fid]);
+      if (deleted.rowCount === 0) throw new Error("No user found with the provided fid to delete");
+    });
+  }
 }

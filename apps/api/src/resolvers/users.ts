@@ -1,20 +1,25 @@
 import type { Pool } from "pg";
 import { GraphQLError } from "graphql";
-import { verifyApiKey } from "../auth.js";
+import { withApiKey } from "../auth.js";
+import { SlidingWindowLimiter, withRateLimit } from "../rate-limit.js";
 import { SignupOperations, broadcastUsers } from "../services/signup.js";
 import {
   signupsInitiatedTotal,
   signupsCompletedTotal,
+  usersDeletedTotal,
   neynarRequestsTotal,
 } from "../metrics.js";
 import neynarClient from "../neynar/client.js";
 import { FlashcastrUsersDb } from "@flashcastr/database";
 import { decrypt } from "@flashcastr/crypto";
-import { requireEnv } from "@flashcastr/config";
+import { requireEnv, intEnv } from "@flashcastr/config";
+
+const TEN_MINUTES_MS = 10 * 60 * 1000;
 
 export function createUserResolvers(pool: Pool) {
   const usersDb = new FlashcastrUsersDb(pool);
   const signupOps = new SignupOperations(pool);
+  const signupLimiter = new SlidingWindowLimiter(intEnv("RATE_LIMIT_SIGNUP_PER_10MIN", 5), TEN_MINUTES_MS);
 
   return {
     Query: {
@@ -137,9 +142,7 @@ export function createUserResolvers(pool: Pool) {
     },
 
     Mutation: {
-      setUserAutoCast: async (_: unknown, args: { fid: number; auto_cast: boolean }, context: unknown) => {
-        verifyApiKey(context as { req?: { headers: Record<string, string | undefined> } });
-
+      setUserAutoCast: withApiKey(async (_: unknown, args: { fid: number; auto_cast: boolean }) => {
         await usersDb.updateAutoCast(args.fid, args.auto_cast);
         const updatedUser = await usersDb.getByFid(args.fid);
 
@@ -149,31 +152,25 @@ export function createUserResolvers(pool: Pool) {
           });
         }
         return updatedUser;
-      },
+      }),
 
-      deleteUser: async (_: unknown, args: { fid: number }, context: unknown) => {
-        verifyApiKey(context as { req?: { headers: Record<string, string | undefined> } });
-
+      deleteUser: withApiKey(async (_: unknown, args: { fid: number }) => {
         const user = await usersDb.getByFid(args.fid);
         if (!user) return { success: false, message: "User not found" };
 
-        const { FlashcastrFlashesDb } = await import("@flashcastr/database");
-        const flashesDb = new FlashcastrFlashesDb(pool);
+        await usersDb.deleteWithFlashes(args.fid);
+        usersDeletedTotal.inc();
 
-        await usersDb.deleteByFid(args.fid);
-        await flashesDb.deleteManyByFid(args.fid);
-
-        // Broadcast updated users to flash-engine
         await broadcastUsers(usersDb);
 
         return { success: true, message: "User deleted successfully" };
-      },
+      }),
 
       signup: async () => {
         return { success: true, message: "Old signup mutation called (currently no-op)." };
       },
 
-      initiateSignup: async (_: unknown, args: { username: string }) => {
+      initiateSignup: withRateLimit("initiateSignup", signupLimiter, async (_: unknown, args: { username: string }) => {
         if (!args.username) {
           throw new GraphQLError("Username is required to initiate signup.", {
             extensions: { code: "BAD_USER_INPUT" },
@@ -182,7 +179,7 @@ export function createUserResolvers(pool: Pool) {
         const result = await signupOps.initiateSignerCreation(args.username);
         signupsInitiatedTotal.inc();
         return result;
-      },
+      }),
     },
   };
 }

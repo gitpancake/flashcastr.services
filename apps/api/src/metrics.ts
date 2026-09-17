@@ -60,13 +60,6 @@ export const neynarRequestsTotal = new Counter({
   registers: [registry],
 });
 
-export const databaseQueriesTotal = new Counter({
-  name: "flashcastr_api_database_queries_total",
-  help: "Total database queries executed",
-  labelNames: ["query_type"],
-  registers: [registry],
-});
-
 // ============================================
 // GAUGES
 // ============================================
@@ -92,14 +85,6 @@ export const graphqlDurationSeconds = new Histogram({
   help: "Duration of GraphQL operations in seconds",
   labelNames: ["operation_type", "operation_name"],
   buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
-  registers: [registry],
-});
-
-export const databaseQueryDurationSeconds = new Histogram({
-  name: "flashcastr_api_database_query_duration_seconds",
-  help: "Duration of database queries in seconds",
-  labelNames: ["query_type"],
-  buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1],
   registers: [registry],
 });
 

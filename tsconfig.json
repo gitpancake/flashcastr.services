@@ -1,52 +1,10 @@
 {
   "extends": "./tsconfig.base.json",
-  "compileOnSave": false,
-  "files": [],
-  "references": [
-    {
-      "path": "./apps/flashcastr"
-    },
-    {
-      "path": "./apps/database-engine"
-    },
-    {
-      "path": "./apps/neynar-engine"
-    },
-    {
-      "path": "./apps/flash-engine"
-    },
-    {
-      "path": "./apps/image-engine"
-    },
-    {
-      "path": "./libs/shared-types"
-    },
-    {
-      "path": "./libs/database"
-    },
-    {
-      "path": "./libs/rabbitmq"
-    },
-    {
-      "path": "./libs/metrics"
-    },
-    {
-      "path": "./libs/config"
-    },
-    {
-      "path": "./libs/crypto"
-    },
-    {
-      "path": "./libs/health"
-    },
-    {
-      "path": "./libs/logger"
-    },
-    {
-      "path": "./libs/proxy"
-    },
-    {
-      "path": "./apps/api"
-    }
-  ]
+  "include": [
+    "apps/*/src/**/*.ts",
+    "apps/*/tests/**/*.ts",
+    "libs/*/src/**/*.ts",
+    "scripts/**/*.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
 }

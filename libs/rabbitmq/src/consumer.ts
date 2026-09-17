@@ -1,48 +1,218 @@
 import { connect, type ChannelModel, type Channel, type ConsumeMessage } from "amqplib";
 import type { MessageEnvelope } from "@flashcastr/shared-types";
-import { setupTopology } from "./topology.js";
+import { createLogger, type Logger } from "@flashcastr/logger";
+import { setupTopology, QUEUES } from "./topology.js";
+import { FatalMessageError, TransientError } from "./errors.js";
+
+export interface ConsumerOptions {
+  /** Defaults to RABBITMQ_URL. */
+  rabbitUrl?: string;
+  /** Defaults to CONSUMER_CONCURRENCY or 1. */
+  prefetch?: number;
+  /** Attempts before a retryable failure is dead-lettered. Defaults to CONSUMER_MAX_ATTEMPTS or 5. */
+  maxAttempts?: number;
+  retryBaseDelayMs?: number;
+  retryMaxDelayMs?: number;
+  /** When true the handler must call ack()/requeue()/deadLetter() itself. */
+  manualAck?: boolean;
+}
+
+export interface QueueDepths {
+  queue: number;
+  deadLetters: number;
+}
+
+type Settlement = "ack" | "requeue" | "dead";
+
+const DEFAULT_MAX_ATTEMPTS = 5;
+const DEFAULT_RETRY_BASE_DELAY_MS = 1000;
+const DEFAULT_RETRY_MAX_DELAY_MS = 30000;
+const MAX_TRACKED_MESSAGES = 10000;
+
+const MAX_RECONNECT_DELAY = 30000;
+const INITIAL_RECONNECT_DELAY = 1000;
+const HEARTBEAT_INTERVAL = 30;
+const CONNECT_TIMEOUT = 20000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function intFromEnv(key: string, fallback: number): number {
+  const parsed = parseInt(process.env[key] ?? "", 10);
+  return Number.isNaN(parsed) ? fallback : parsed;
+}
+
+export function isMessageEnvelope(value: unknown): value is MessageEnvelope<unknown> {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.id === "string" && typeof candidate.type === "string" && "payload" in candidate;
+}
 
 export abstract class FlashcastrConsumer<T = unknown> {
   private connection: ChannelModel | null = null;
   private channel: Channel | null = null;
-  private reconnecting: boolean = false;
-  private reconnectAttempts: number = 0;
-  private closing: boolean = false;
-  private static readonly MAX_RECONNECT_DELAY = 30000;
-  private static readonly INITIAL_RECONNECT_DELAY = 1000;
-  private static readonly HEARTBEAT_INTERVAL = 30;
-  private static readonly CONNECT_TIMEOUT = 20000;
+  private consumerTag: string | null = null;
+  private reconnecting = false;
+  private reconnectAttempts = 0;
+  private closing = false;
 
+  private readonly attemptsByMessage = new Map<string, number>();
+  private readonly deliveryChannel = new WeakMap<ConsumeMessage, Channel>();
+  private readonly messageKeys = new WeakMap<ConsumeMessage, string>();
+
+  protected readonly log: Logger;
   protected readonly rabbitUrl: string;
   protected readonly queue: string;
   protected readonly serviceName: string;
+  protected readonly prefetch: number;
+  private readonly maxAttempts: number;
+  private readonly retryBaseDelayMs: number;
+  private readonly retryMaxDelayMs: number;
+  private readonly manualAck: boolean;
 
-  constructor(serviceName: string, queue: string) {
-    this.rabbitUrl = process.env.RABBITMQ_URL!;
-    if (!this.rabbitUrl) throw new Error("RABBITMQ_URL is not defined");
+  constructor(serviceName: string, queue: string, options: ConsumerOptions = {}) {
+    const rabbitUrl = options.rabbitUrl ?? process.env.RABBITMQ_URL;
+    if (!rabbitUrl) throw new Error("RABBITMQ_URL is not defined");
+    this.rabbitUrl = rabbitUrl;
     this.queue = queue;
     this.serviceName = serviceName;
+    this.log = createLogger(serviceName);
+    this.prefetch = options.prefetch ?? intFromEnv("CONSUMER_CONCURRENCY", 1);
+    this.maxAttempts = options.maxAttempts ?? intFromEnv("CONSUMER_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS);
+    this.retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
+    this.retryMaxDelayMs = options.retryMaxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
+    this.manualAck = options.manualAck ?? false;
   }
 
-  protected abstract handleMessage(
-    envelope: MessageEnvelope<T>,
-    raw: ConsumeMessage
-  ): Promise<void>;
+  protected abstract handleMessage(envelope: MessageEnvelope<T>, raw: ConsumeMessage): Promise<void>;
 
+  /** Whether a thrown error should be retried (bounded by maxAttempts) rather than dead-lettered. */
   protected shouldRequeueOnFailure(_error: Error): boolean {
     return false;
   }
 
-  /** Override to run logic after a successful reconnect (e.g. re-fetch cached state) */
+  /** Override to run logic after a successful reconnect (e.g. re-fetch cached state). */
   protected onReconnect(): void {}
 
+  get queueName(): string {
+    return this.queue;
+  }
+
+  isConsuming(): boolean {
+    return this.channel !== null && this.consumerTag !== null;
+  }
+
+  async queueDepths(): Promise<QueueDepths | null> {
+    const channel = this.channel;
+    if (!channel) return null;
+    const [queue, deadLetters] = await Promise.all([
+      channel.checkQueue(this.queue),
+      channel.checkQueue(QUEUES.DEAD_LETTERS),
+    ]);
+    return { queue: queue.messageCount, deadLetters: deadLetters.messageCount };
+  }
+
+  protected ack(raw: ConsumeMessage): void {
+    this.settle(raw, "ack");
+  }
+
+  protected async requeue(raw: ConsumeMessage, delayMs = 0): Promise<void> {
+    if (delayMs > 0) await sleep(delayMs);
+    this.settle(raw, "requeue");
+  }
+
+  protected deadLetter(raw: ConsumeMessage): void {
+    this.settle(raw, "dead");
+  }
+
+  protected retryDelay(attempt: number): number {
+    const exponential = this.retryBaseDelayMs * Math.pow(2, attempt - 1);
+    return Math.min(exponential, this.retryMaxDelayMs);
+  }
+
+  private settle(raw: ConsumeMessage, outcome: Settlement): void {
+    const channel = this.deliveryChannel.get(raw);
+    if (!channel || channel !== this.channel) {
+      this.log.warn("Delivery channel is gone; broker will redeliver the unacked message");
+      return;
+    }
+
+    const key = this.messageKeys.get(raw);
+    if (key && outcome !== "requeue") this.attemptsByMessage.delete(key);
+
+    try {
+      if (outcome === "ack") channel.ack(raw);
+      else channel.nack(raw, false, outcome === "requeue");
+    } catch (err) {
+      this.log.error("Failed to settle message:", err);
+    }
+  }
+
+  private recordAttempt(key: string): number {
+    const attempt = (this.attemptsByMessage.get(key) ?? 0) + 1;
+    this.attemptsByMessage.set(key, attempt);
+    if (this.attemptsByMessage.size > MAX_TRACKED_MESSAGES) {
+      const oldest = this.attemptsByMessage.keys().next().value;
+      if (oldest !== undefined) this.attemptsByMessage.delete(oldest);
+    }
+    return attempt;
+  }
+
+  private async handleDelivery(channel: Channel, raw: ConsumeMessage): Promise<void> {
+    this.deliveryChannel.set(raw, channel);
+
+    let envelope: MessageEnvelope<T>;
+    try {
+      const parsed: unknown = JSON.parse(raw.content.toString());
+      if (!isMessageEnvelope(parsed)) throw new FatalMessageError("Message is not a MessageEnvelope");
+      envelope = parsed as MessageEnvelope<T>;
+    } catch (err) {
+      this.log.error(`Dead-lettering malformed message: ${(err as Error).message}`);
+      this.settle(raw, "dead");
+      return;
+    }
+
+    const key = raw.properties.messageId ?? envelope.id;
+    this.messageKeys.set(raw, key);
+
+    try {
+      await this.handleMessage(envelope, raw);
+      if (!this.manualAck) this.settle(raw, "ack");
+    } catch (err) {
+      await this.settleFailure(raw, key, err as Error);
+    }
+  }
+
+  private async settleFailure(raw: ConsumeMessage, key: string, error: Error): Promise<void> {
+    if (error instanceof TransientError) {
+      this.log.warn(`${error.message}; requeue in ${error.retryAfterMs}ms`);
+      await sleep(error.retryAfterMs);
+      this.settle(raw, "requeue");
+      return;
+    }
+
+    const attempt = this.recordAttempt(key);
+    const isRetryable = !(error instanceof FatalMessageError) && this.shouldRequeueOnFailure(error);
+    const hasAttemptsLeft = attempt < this.maxAttempts;
+
+    if (isRetryable && hasAttemptsLeft) {
+      const delay = this.retryDelay(attempt);
+      this.log.warn(
+        `Error processing message (attempt ${attempt}/${this.maxAttempts}): ${error.message}; requeue in ${delay}ms`
+      );
+      await sleep(delay);
+      this.settle(raw, "requeue");
+      return;
+    }
+
+    const reason = isRetryable ? `after ${attempt} attempt(s)` : "not retryable";
+    this.log.error(`Dead-lettering message (${reason}): ${error.message}`);
+    this.settle(raw, "dead");
+  }
 
   private getReconnectDelay(): number {
-    return Math.min(
-      FlashcastrConsumer.INITIAL_RECONNECT_DELAY *
-        Math.pow(2, this.reconnectAttempts),
-      FlashcastrConsumer.MAX_RECONNECT_DELAY
-    );
+    return Math.min(INITIAL_RECONNECT_DELAY * Math.pow(2, this.reconnectAttempts), MAX_RECONNECT_DELAY);
   }
 
   /**
@@ -53,6 +223,7 @@ export abstract class FlashcastrConsumer<T = unknown> {
     const { connection, channel } = this;
     this.connection = null;
     this.channel = null;
+    this.consumerTag = null;
 
     if (channel) {
       channel.removeAllListeners();
@@ -65,26 +236,24 @@ export abstract class FlashcastrConsumer<T = unknown> {
   }
 
   /**
-   * amqplib's own `timeout` only covers the TCP connect — a broker that accepts
+   * amqplib's own `timeout` only covers the TCP connect. A broker that accepts
    * the socket but never completes the AMQP handshake leaves the promise pending
-   * forever, which parks the reconnect loop with `reconnecting` stuck true and no
-   * consumer registered. Race an explicit deadline so a hung handshake is retried.
+   * forever, so race an explicit deadline.
    */
   private async connectWithTimeout(url: string): Promise<ChannelModel> {
-    const attempt = connect(url, { timeout: FlashcastrConsumer.CONNECT_TIMEOUT });
+    const attempt = connect(url, { timeout: CONNECT_TIMEOUT });
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(
-        () => reject(new Error(`AMQP handshake timed out after ${FlashcastrConsumer.CONNECT_TIMEOUT}ms`)),
-        FlashcastrConsumer.CONNECT_TIMEOUT
+        () => reject(new Error(`AMQP handshake timed out after ${CONNECT_TIMEOUT}ms`)),
+        CONNECT_TIMEOUT
       );
     });
 
     try {
       return await Promise.race([attempt, deadline]);
     } catch (err) {
-      // If the handshake completes after we gave up, close it rather than leak the socket.
       attempt.then((c) => c.close().catch(() => {})).catch(() => {});
       throw err;
     } finally {
@@ -99,118 +268,86 @@ export abstract class FlashcastrConsumer<T = unknown> {
     while (!this.closing) {
       this.reconnectAttempts++;
       const delay = this.getReconnectDelay();
-      console.log(
-        `[${this.serviceName}] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})...`
-      );
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      this.log.info(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})...`);
+      await sleep(delay);
 
       try {
         await this.teardown();
         await this.connect();
         this.reconnectAttempts = 0;
         this.reconnecting = false;
-        console.log(`[${this.serviceName}] Reconnected successfully`);
+        this.log.info("Reconnected successfully");
         this.onReconnect();
         return;
       } catch (err) {
-        console.error(
-          `[${this.serviceName}] Reconnect attempt ${this.reconnectAttempts} failed:`,
-          (err as Error).message
-        );
+        this.log.error(`Reconnect attempt ${this.reconnectAttempts} failed:`, (err as Error).message);
       }
     }
 
-    // Only reached when close() flipped `closing` mid-loop — clear the guard so a
-    // future startConsuming() on this instance isn't permanently locked out.
     this.reconnecting = false;
   }
 
   private async connect(): Promise<void> {
     const url = new URL(this.rabbitUrl);
-    url.searchParams.set(
-      "heartbeat",
-      String(FlashcastrConsumer.HEARTBEAT_INTERVAL)
-    );
-    this.connection = await this.connectWithTimeout(url.toString());
+    url.searchParams.set("heartbeat", String(HEARTBEAT_INTERVAL));
+    const connection = await this.connectWithTimeout(url.toString());
+    this.connection = connection;
 
-    this.connection.on("error", (err) => {
-      console.error(`[${this.serviceName}] Connection error:`, err.message);
+    connection.on("error", (err) => {
+      this.log.error("Connection error:", err.message);
     });
 
-    this.connection.on("close", () => {
+    connection.on("close", () => {
       if (this.closing) return;
-      console.warn(`[${this.serviceName}] Connection closed — initiating reconnect`);
+      this.log.warn("Connection closed; initiating reconnect");
       this.connection = null;
       this.channel = null;
+      this.consumerTag = null;
       this.reconnect();
     });
 
-    this.channel = await this.connection.createChannel();
+    const channel = await connection.createChannel();
+    this.channel = channel;
 
-    // Set up topology on connect
-    await setupTopology(this.channel);
+    await setupTopology(channel);
+    await channel.prefetch(this.prefetch);
 
-    const prefetchCount = parseInt(process.env.CONSUMER_CONCURRENCY || "1");
-    await this.channel.prefetch(prefetchCount);
-
-    this.channel.on("error", (err) => {
-      console.error(`[${this.serviceName}] Channel error:`, err.message);
+    channel.on("error", (err) => {
+      this.log.error("Channel error:", err.message);
     });
 
-    this.channel.on("close", () => {
+    channel.on("close", () => {
       if (this.closing) return;
       // A channel can die while the TCP connection stays open (broker-side channel
-      // error, consumer cancelled, queue deleted). Nothing else fires in that case,
-      // so without this the process stays "up" with zero consumers registered and
-      // the queue silently backs up until someone restarts it.
-      console.warn(`[${this.serviceName}] Channel closed — initiating reconnect`);
+      // error, consumer cancelled, queue deleted). Nothing else fires in that case.
+      this.log.warn("Channel closed; initiating reconnect");
       this.channel = null;
+      this.consumerTag = null;
       this.reconnect();
     });
 
-    const channel = this.channel;
-
-    await channel.consume(
+    const consumer = await channel.consume(
       this.queue,
-      async (msg) => {
+      (msg) => {
         // amqplib delivers null when the broker cancels the consumer (queue deleted,
         // node failover). Swallowing it leaves us subscribed to nothing.
         if (!msg) {
           if (this.closing) return;
-          console.warn(`[${this.serviceName}] Consumer cancelled by broker — initiating reconnect`);
+          this.log.warn("Consumer cancelled by broker; initiating reconnect");
+          this.consumerTag = null;
           this.reconnect();
           return;
         }
-
-        try {
-          const content = msg.content.toString();
-          const envelope: MessageEnvelope<T> = JSON.parse(content);
-          await this.handleMessage(envelope, msg);
-          channel.ack(msg);
-        } catch (err) {
-          const errMsg = (err as Error).message || String(err);
-          console.error(
-            `[${this.serviceName}] Error processing message: ${errMsg}`
-          );
-          const shouldRequeue = this.shouldRequeueOnFailure(err as Error);
-          if (shouldRequeue) {
-            channel.nack(msg, false, true);
-          } else {
-            // Send to DLQ
-            channel.nack(msg, false, false);
-          }
-        }
+        this.handleDelivery(channel, msg).catch((err) => this.log.error("Unhandled delivery error:", err));
       },
       { noAck: false }
     );
+    this.consumerTag = consumer.consumerTag;
   }
 
   async startConsuming(): Promise<void> {
     await this.connect();
-    const prefetchCount = parseInt(process.env.CONSUMER_CONCURRENCY || "1");
-    console.log(
-      `[${this.serviceName}] Consuming from ${this.queue} (concurrency=${prefetchCount})`
-    );
+    this.log.info(`Consuming from ${this.queue} (concurrency=${this.prefetch}, maxAttempts=${this.maxAttempts})`);
   }
 
   async close(): Promise<void> {

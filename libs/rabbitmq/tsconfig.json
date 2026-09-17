@@ -1,13 +1,4 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": {
-    "outDir": "../../dist/libs/rabbitmq",
-    "rootDir": "src"
-  },
-  "include": ["src/**/*.ts"],
-  "references": [
-    {
-      "path": "../shared-types"
-    }
-  ]
+  "include": ["src/**/*.ts"]
 }

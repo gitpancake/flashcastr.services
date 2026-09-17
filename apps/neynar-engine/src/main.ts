@@ -3,10 +3,12 @@ config();
 
 import type { ConsumeMessage } from "amqplib";
 import { NeynarAPIClient } from "@neynar/nodejs-sdk";
-import { FlashcastrConsumer, FlashcastrPublisher, QUEUES, ROUTING_KEYS } from "@flashcastr/rabbitmq";
-import { getPool, FlashcastrFlashesDb, FlashcastrUsersDb, closePool } from "@flashcastr/database";
+import type { PostCastReqBodyEmbeds } from "@neynar/nodejs-sdk/build/api/index.js";
+import { FlashcastrConsumer, FlashcastrPublisher, QUEUES, ROUTING_KEYS, observeQueueDepths } from "@flashcastr/rabbitmq";
+import { getPool, FlashcastrFlashesDb, FlashcastrUsersDb, closePool, type FailedCastRow } from "@flashcastr/database";
 import { decrypt } from "@flashcastr/crypto";
-import { createMetricsRegistry, startMetricsServer, Counter } from "@flashcastr/metrics";
+import { createMetricsRegistry, Counter } from "@flashcastr/metrics";
+import { runService } from "@flashcastr/runtime";
 import { createLogger } from "@flashcastr/logger";
 import { requireEnv, intEnv } from "@flashcastr/config";
 import type { AxiosError } from "axios";
@@ -28,6 +30,17 @@ function formatError(err: unknown): string {
 
 const log = createLogger("neynar-engine");
 const registry = createMetricsRegistry("neynar-engine");
+
+const CAST_CHANNEL_ID = "invaders";
+
+function buildFlashCast(signerUuid: string, flashId: number, city: string) {
+  return {
+    signerUuid,
+    text: `I just flashed an Invader in ${city}! 👾`,
+    embeds: [{ url: `https://www.flashcastr.app/flash/${flashId}` } as PostCastReqBodyEmbeds],
+    channelId: CAST_CHANNEL_ID,
+  };
+}
 
 const castsPublished = new Counter({
   name: "neynar_engine_casts_published_total",
@@ -68,11 +81,7 @@ class NeynarEngineConsumer extends FlashcastrConsumer<FlashStoredPayload> {
   ): Promise<void> {
     const payload = envelope.payload;
 
-    // Find the flashcastr user for this flash's player
-    const users = await flashcastrUsersDb.getMany({});
-    const appUser = users.find(
-      (u) => u.username.toLowerCase() === payload.player.toLowerCase()
-    );
+    const appUser = await flashcastrUsersDb.getByUsername(payload.player);
 
     if (!appUser) {
       // Not a flashcastr user — skip silently
@@ -111,12 +120,9 @@ class NeynarEngineConsumer extends FlashcastrConsumer<FlashStoredPayload> {
       try {
         const signerUuid = decrypt(appUser.signer_uuid, SIGNER_ENCRYPTION_KEY);
 
-        const cast = await neynarClient.publishCast({
-          signerUuid,
-          text: `I just flashed an Invader in ${payload.city}! 👾`,
-          embeds: [{ url: `https://www.flashcastr.app/flash/${payload.flash_id}` }],
-          channelId: "invaders",
-        });
+        const cast = await neynarClient.publishCast(
+          buildFlashCast(signerUuid, payload.flash_id, payload.city)
+        );
 
         castHash = cast.cast.hash;
         castsPublished.inc();
@@ -156,6 +162,17 @@ class NeynarEngineConsumer extends FlashcastrConsumer<FlashStoredPayload> {
   }
 }
 
+function isSignerRevokedError(err: unknown): boolean {
+  const message = formatError(err).toLowerCase();
+  return message.includes("revoked") || message.includes("403") || message.includes("forbidden");
+}
+
+async function disableAutoCastIfRevoked(flash: FailedCastRow, err: unknown): Promise<void> {
+  if (!isSignerRevokedError(err)) return;
+  await flashcastrUsersDb.updateAutoCast(flash.user_fid, false);
+  log.warn(`Signer for fid ${flash.user_fid} rejected the cast; auto_cast disabled`);
+}
+
 // Retry worker — runs every 5 minutes
 async function retryFailedCasts(): Promise<void> {
   try {
@@ -167,23 +184,15 @@ async function retryFailedCasts(): Promise<void> {
 
     for (const flash of failedFlashes) {
       try {
-        const f = flash as Record<string, unknown>;
-        const signerUuid = decrypt(f.signer_uuid as string, SIGNER_ENCRYPTION_KEY);
-
-        const cast = await neynarClient.publishCast({
-          signerUuid,
-          text: `I just flashed an Invader in ${f.city}! 👾`,
-          embeds: [{ url: `https://www.flashcastr.app/flash/${f.flash_id}` }],
-          channelId: "invaders",
-        });
-
-        await flashcastrFlashesDb.updateCastHash(f.flash_id as number, cast.cast.hash);
+        const signerUuid = decrypt(flash.signer_uuid, SIGNER_ENCRYPTION_KEY);
+        const cast = await neynarClient.publishCast(buildFlashCast(signerUuid, flash.flash_id, flash.city));
+        await flashcastrFlashesDb.updateCastHash(flash.flash_id, cast.cast.hash);
         successCount++;
         castsPublished.inc();
       } catch (err) {
         castsFailed.inc();
-        const f = flash as Record<string, unknown>;
-        log.error(`Retry failed for flash ${f.flash_id}: ${formatError(err)}`);
+        log.error(`Retry failed for flash ${flash.flash_id}: ${formatError(err)}`);
+        await disableAutoCastIfRevoked(flash, err);
       }
     }
 
@@ -196,7 +205,7 @@ async function retryFailedCasts(): Promise<void> {
 // Check signer statuses on startup
 async function checkSignerStatuses(): Promise<void> {
   try {
-    const users = await flashcastrUsersDb.getMany({});
+    const users = await flashcastrUsersDb.getAllActive();
     const autoCastUsers = users.filter((u) => u.auto_cast);
 
     if (autoCastUsers.length === 0) {
@@ -239,34 +248,31 @@ async function checkSignerStatuses(): Promise<void> {
   }
 }
 
-// Start
-const metricsPort = intEnv("METRICS_PORT", 9090);
-startMetricsServer(registry, metricsPort);
+const consumer = new NeynarEngineConsumer();
+const retryInterval = intEnv("RETRY_INTERVAL_MS", 300000);
 
-// Run signer check before starting consumer
-checkSignerStatuses().then(() => {
-  const consumer = new NeynarEngineConsumer();
-  consumer.startConsuming().catch((err) => {
-    log.error("Failed to start consumer:", err);
-    process.exit(1);
-  });
+runService("neynar-engine", {
+  registry,
+  metricsPort: intEnv("METRICS_PORT", 9090),
+  healthChecks: {
+    rabbitmq: () => ({ status: consumer.isConsuming() ? "ok" : "error" }),
+    postgres: async () => {
+      await pool.query("SELECT 1");
+      return { status: "ok" };
+    },
+  },
+  start: async (ctx) => {
+    ctx.onShutdown("postgres", () => closePool());
+    ctx.onShutdown("publisher", () => publisher.close());
+    ctx.onShutdown("consumer", () => consumer.close());
 
-  // Start retry worker
-  const retryInterval = intEnv("RETRY_INTERVAL_MS", 300000); // 5 minutes
-  setInterval(() => {
-    retryFailedCasts().catch((err) => log.error("Retry interval error:", err));
-  }, retryInterval);
+    await checkSignerStatuses();
+    await consumer.startConsuming();
+    ctx.onShutdown("queue-depths", observeQueueDepths(registry, [consumer]));
 
-  log.info("neynar-engine started");
-
-  const shutdown = async (signal: string) => {
-    log.info(`Received ${signal}, shutting down...`);
-    await consumer.close();
-    await publisher.close();
-    await closePool();
-    process.exit(0);
-  };
-
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+    const retryTimer = setInterval(() => {
+      retryFailedCasts().catch((err) => log.error("Retry interval error:", err));
+    }, retryInterval);
+    ctx.onShutdown("retry-worker", () => clearInterval(retryTimer));
+  },
 });

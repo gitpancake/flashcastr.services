@@ -2,6 +2,19 @@ import { Pool } from "pg";
 import type { FlashcastrFlash } from "@flashcastr/shared-types";
 import { Postgres } from "./postgres-base.js";
 
+export interface FailedCastRow {
+  flash_id: number;
+  user_fid: number;
+  user_username: string;
+  user_pfp_url: string;
+  signer_uuid: string;
+  auto_cast: boolean;
+  player: string;
+  city: string;
+  ipfs_cid: string;
+  timestamp: number;
+}
+
 export class FlashcastrFlashesDb extends Postgres<FlashcastrFlash> {
   constructor(pool: Pool) {
     super(pool);
@@ -32,7 +45,7 @@ export class FlashcastrFlashesDb extends Postgres<FlashcastrFlash> {
     return await this.query(sql, values);
   }
 
-  async getFailedCastsForRetry(limit: number, sinceDays: number): Promise<unknown[]> {
+  async getFailedCastsForRetry(limit: number, sinceDays: number): Promise<FailedCastRow[]> {
     const sql = `
       SELECT
         ff.flash_id,
@@ -49,14 +62,16 @@ export class FlashcastrFlashesDb extends Postgres<FlashcastrFlash> {
       INNER JOIN flashcastr_users fu ON ff.user_fid = fu.fid
       INNER JOIN flashes f ON ff.flash_id = f.flash_id
       WHERE ff.cast_hash IS NULL
+        AND ff.deleted = false
+        AND fu.deleted = false
         AND fu.auto_cast = true
         AND f.ipfs_cid IS NOT NULL
         AND f.ipfs_cid != ''
-        AND f.timestamp > NOW() - INTERVAL '${sinceDays} days'
+        AND f.timestamp > NOW() - make_interval(days => $2)
       ORDER BY f.timestamp DESC
       LIMIT $1
     `;
-    return await this.query(sql, [limit]);
+    return await this.query<FailedCastRow>(sql, [limit, sinceDays]);
   }
 
   async updateCastHash(flashId: number, castHash: string): Promise<void> {

@@ -1,8 +1,45 @@
 import type { Pool } from "pg";
 import { PostgresFlashesDb } from "@flashcastr/database";
+import { WhereBuilder, clampLimit, pageOffset } from "../sql/where-builder.js";
 
-const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
+
+const FLASHCASTR_FLASH_SELECT = `
+  SELECT
+    ff.id, ff.flash_id, ff.user_fid, ff.user_username, ff.user_pfp_url, ff.cast_hash,
+    f.flash_id as f_flash_id, f.city, f.player, f.img, f.ipfs_cid, f.text,
+    EXTRACT(EPOCH FROM f.timestamp)::bigint::text as f_timestamp, f.flash_count
+  FROM flashcastr_flashes ff
+  INNER JOIN flashcastr_users fu ON ff.user_fid = fu.fid
+  INNER JOIN flashes f ON ff.flash_id = f.flash_id
+`;
+
+const GLOBAL_FLASH_SELECT = `
+  SELECT flash_id::text as flash_id, city, player, img, ipfs_cid, text,
+         EXTRACT(EPOCH FROM timestamp)::bigint::text as timestamp, flash_count
+  FROM flashes
+`;
+
+function toFlashcastrFlash(row: Record<string, unknown>) {
+  return {
+    id: row.id,
+    flash_id: String(row.flash_id),
+    user_fid: row.user_fid,
+    user_username: row.user_username,
+    user_pfp_url: row.user_pfp_url,
+    cast_hash: row.cast_hash,
+    flash: {
+      flash_id: String(row.f_flash_id),
+      city: row.city,
+      player: row.player,
+      img: row.img,
+      ipfs_cid: row.ipfs_cid,
+      text: row.text,
+      timestamp: row.f_timestamp,
+      flash_count: row.flash_count,
+    },
+  };
+}
 
 export function createFlashResolvers(pool: Pool) {
   const flashesDb = new PostgresFlashesDb(pool);
@@ -10,142 +47,43 @@ export function createFlashResolvers(pool: Pool) {
   return {
     Query: {
       flashes: async (_: unknown, args: { fid?: number; username?: string; page?: number; limit?: number; city?: string }) => {
-        const { page = DEFAULT_PAGE, limit = DEFAULT_LIMIT } = args;
-        const validatedPage = Math.max(DEFAULT_PAGE, page);
-        const offset = (validatedPage - 1) * limit;
+        const limit = clampLimit(args.limit, DEFAULT_LIMIT);
+        const where = new WhereBuilder(["ff.deleted = false", "fu.deleted = false"])
+          .eq("ff.user_fid", args.fid)
+          .eq("ff.user_username", args.username)
+          .eqIgnoreCase("f.city", args.city);
+        const pagination = where.paginate(limit, pageOffset(args.page, limit));
 
-        const params: unknown[] = [];
-        const conditions: string[] = ["ff.deleted = false", "fu.deleted = false"];
-        let paramIndex = 1;
-
-        if (typeof args.fid === "number") {
-          conditions.push(`ff.user_fid = $${paramIndex++}`);
-          params.push(args.fid);
-        }
-        if (args.username) {
-          conditions.push(`ff.user_username = $${paramIndex++}`);
-          params.push(args.username);
-        }
-        if (args.city) {
-          conditions.push(`LOWER(f.city) = LOWER($${paramIndex++})`);
-          params.push(args.city);
-        }
-
-        params.push(limit, offset);
-
-        const sql = `
-          SELECT
-            ff.id, ff.flash_id, ff.user_fid, ff.user_username, ff.user_pfp_url, ff.cast_hash,
-            f.flash_id as f_flash_id, f.city, f.player, f.img, f.ipfs_cid, f.text,
-            EXTRACT(EPOCH FROM f.timestamp)::bigint::text as f_timestamp, f.flash_count
-          FROM flashcastr_flashes ff
-          INNER JOIN flashcastr_users fu ON ff.user_fid = fu.fid
-          INNER JOIN flashes f ON ff.flash_id = f.flash_id
-          WHERE ${conditions.join(" AND ")}
-          ORDER BY f.timestamp DESC
-          LIMIT $${paramIndex++} OFFSET $${paramIndex}
-        `;
-
-        const result = await pool.query(sql, params);
-
-        return result.rows.map((row: Record<string, unknown>) => ({
-          id: row.id,
-          flash_id: String(row.flash_id),
-          user_fid: row.user_fid,
-          user_username: row.user_username,
-          user_pfp_url: row.user_pfp_url,
-          cast_hash: row.cast_hash,
-          flash: {
-            flash_id: String(row.f_flash_id),
-            city: row.city,
-            player: row.player,
-            img: row.img,
-            ipfs_cid: row.ipfs_cid,
-            text: row.text,
-            timestamp: row.f_timestamp,
-            flash_count: row.flash_count,
-          },
-        }));
+        const result = await pool.query(
+          `${FLASHCASTR_FLASH_SELECT} ${where.clause()} ORDER BY f.timestamp DESC ${pagination}`,
+          where.params
+        );
+        return result.rows.map(toFlashcastrFlash);
       },
 
       globalFlashes: async (_: unknown, args: { page?: number; limit?: number; city?: string; player?: string }) => {
-        const { page = DEFAULT_PAGE, limit = DEFAULT_LIMIT } = args;
-        const validatedPage = Math.max(DEFAULT_PAGE, page);
-        const offset = (validatedPage - 1) * limit;
+        const limit = clampLimit(args.limit, DEFAULT_LIMIT);
+        const where = new WhereBuilder().eqIgnoreCase("city", args.city).eqIgnoreCase("player", args.player);
+        const pagination = where.paginate(limit, pageOffset(args.page, limit));
 
-        const params: unknown[] = [];
-        const conditions: string[] = [];
-        let paramIndex = 1;
-
-        if (args.city) {
-          conditions.push(`LOWER(city) = LOWER($${paramIndex++})`);
-          params.push(args.city);
-        }
-        if (args.player) {
-          conditions.push(`LOWER(player) = LOWER($${paramIndex++})`);
-          params.push(args.player);
-        }
-
-        const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-        params.push(limit, offset);
-
-        const sql = `
-          SELECT flash_id::text as flash_id, city, player, img, ipfs_cid, text,
-                 EXTRACT(EPOCH FROM timestamp)::bigint::text as timestamp, flash_count
-          FROM flashes
-          ${whereClause}
-          ORDER BY timestamp DESC
-          LIMIT $${paramIndex++} OFFSET $${paramIndex}
-        `;
-
-        const result = await pool.query(sql, params);
+        const result = await pool.query(
+          `${GLOBAL_FLASH_SELECT} ${where.clause()} ORDER BY timestamp DESC ${pagination}`,
+          where.params
+        );
         return result.rows;
       },
 
       globalFlash: async (_: unknown, args: { flash_id: string }) => {
-        const result = await pool.query(
-          `SELECT flash_id::text as flash_id, city, player, img, ipfs_cid, text,
-                  EXTRACT(EPOCH FROM timestamp)::bigint::text as timestamp, flash_count
-           FROM flashes WHERE flash_id = $1`,
-          [args.flash_id]
-        );
+        const result = await pool.query(`${GLOBAL_FLASH_SELECT} WHERE flash_id = $1`, [args.flash_id]);
         return result.rows[0] ?? null;
       },
 
       flash: async (_: unknown, args: { id: number }) => {
         const result = await pool.query(
-          `SELECT
-            ff.id, ff.flash_id, ff.user_fid, ff.user_username, ff.user_pfp_url, ff.cast_hash,
-            f.flash_id as f_flash_id, f.city, f.player, f.img, f.ipfs_cid, f.text,
-            EXTRACT(EPOCH FROM f.timestamp)::bigint::text as f_timestamp, f.flash_count
-          FROM flashcastr_flashes ff
-          INNER JOIN flashcastr_users fu ON ff.user_fid = fu.fid
-          INNER JOIN flashes f ON ff.flash_id = f.flash_id
-          WHERE ff.id = $1 AND ff.deleted = false AND fu.deleted = false`,
+          `${FLASHCASTR_FLASH_SELECT} WHERE ff.id = $1 AND ff.deleted = false AND fu.deleted = false`,
           [args.id]
         );
-
-        if (result.rows.length === 0) return null;
-        const row = result.rows[0];
-
-        return {
-          id: row.id,
-          flash_id: String(row.flash_id),
-          user_fid: row.user_fid,
-          user_username: row.user_username,
-          user_pfp_url: row.user_pfp_url,
-          cast_hash: row.cast_hash,
-          flash: {
-            flash_id: String(row.f_flash_id),
-            city: row.city,
-            player: row.player,
-            img: row.img,
-            ipfs_cid: row.ipfs_cid,
-            text: row.text,
-            timestamp: row.f_timestamp,
-            flash_count: row.flash_count,
-          },
-        };
+        return result.rows.length === 0 ? null : toFlashcastrFlash(result.rows[0]);
       },
 
       flashesSummary: async (_: unknown, args: { fid: number }) => {

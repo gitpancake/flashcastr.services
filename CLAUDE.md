@@ -1,112 +1,95 @@
 # flashcastr.services
 
-Nx monorepo with 7 services (4 pipeline + 1 API + 2 agents) for the Flashcastr platform.
+npm-workspaces monorepo: 4 pipeline engines, 1 GraphQL API, 1 LangGraph agent, 11 shared libs.
 
-## Quick Reference
+## Workspace
 
-### Workspace Layout
+- `apps/` — flash-engine, image-engine, database-engine, neynar-engine, api, agent-invaders (own `CLAUDE.md`, no lib imports)
+- `libs/` — shared-types, rabbitmq, database, proxy, metrics, health, logger, crypto, config, resilience, runtime
+- Imports use `@flashcastr/<lib>`; resolved from source via the `@flashcastr/source` exports condition. No build step: services run under `tsx`.
+- `scripts/` — `replay-dead-letters.ts` (DLQ → original routing key), `migrate-old-queue.ts` (one-off)
 
-- `apps/` — 7 deployable services (flash-engine, image-engine, database-engine, neynar-engine, api, agent-flashcastr, agent-invaders)
-- `apps/agent-invaders` — LangGraph agent for @flashcastr (daily invader-spotter digest + mention replies); own `CLAUDE.md`, self-contained, no lib imports
-- `libs/` — 9 shared libraries (shared-types, rabbitmq, database, proxy, metrics, config, health, logger, crypto)
-- All imports between libs use `@flashcastr/<lib-name>` (resolved via npm workspaces + `customConditions`)
+## Stack
 
-### Tech Stack
+Node 22 (`node:22-slim`, engines `>=22`), TypeScript strict `nodenext`, RabbitMQ (`amqplib` 2, topic exchange `flashcastr.events`, DLX `flashcastr.dlx`), Postgres (`pg`), Pinata, Neynar SDK, Apollo Server 5 + `@as-integrations/express4` + graphql-ws 6, prom-client, OpenTelemetry 2.x (api only), Loki shipping via `@flashcastr/logger`.
 
-- **Runtime:** Node.js 20, TypeScript (strict mode, `nodenext` modules)
-- **Message bus:** RabbitMQ (topic exchange `flashcastr.events`, DLQ via `flashcastr.dlx`)
-- **Database:** PostgreSQL (shared between database-engine and neynar-engine)
-- **IPFS:** Pinata API
-- **Farcaster:** Neynar SDK (`@neynar/nodejs-sdk`)
-- **API:** Apollo Server v4, graphql-ws (WebSocket subscriptions)
-- **Monitoring:** Prometheus (`prom-client`), OpenTelemetry (OTLP)
-- **Logging:** Structured logging with Loki shipping (`@flashcastr/logger`)
-- **Build:** Nx workspace with npm workspaces
-
-### Common Commands
+## Commands
 
 ```bash
-npm install                                              # Install deps
-npx tsx --watch apps/<service>/src/main.ts                # Dev mode for a service
-npx tsc --project apps/<service>/tsconfig.json --noEmit   # Type-check a service
-docker-compose up                                        # Run everything locally
+npm install
+npm run typecheck          # tsc over apps/, libs/, scripts/ (what CI runs)
+npm test                   # vitest: libs/*/src/**/*.test.ts, apps/*/src/**/*.test.ts, apps/*/tests/**
+npx tsx --watch apps/<service>/src/main.ts
+npx tsx scripts/replay-dead-letters.ts --dry-run [--limit N] [--only flash.received]
+docker-compose up
 ```
 
-### Message Flow
+Lockfile: regenerate with `npx npm@10 install --package-lock-only` after dependency changes; the node image's npm ci rejects npm 11 lockfiles.
+
+## Message Flow
 
 ```
-flash-engine  --FLASH_RECEIVED-->  image-engine  --IMAGE_PINNED-->  database-engine  --FLASH_STORED-->  neynar-engine  --FLASH_CASTED-->
-                                                                                          └──> api (subscriptions)
+flash-engine --flash.received--> image-engine --image.pinned--> database-engine --flash.stored--> neynar-engine --flash.casted-->
+                                                                                       └--> api (graphql subscriptions)
+database-engine <--users.request-- flash-engine ; database-engine --users.broadcast--> flash-engine
 ```
 
-All messages use `MessageEnvelope<T>` from `@flashcastr/shared-types` with `id`, `correlationId`, `source`, `type`, `version`, `timestamp`, `payload`.
+Envelope: `MessageEnvelope<T>` (`id`, `correlationId`, `source`, `type`, `version`, `timestamp`, `payload`). Publisher sets AMQP `messageId = envelope.id`.
 
-### Database Tables
+## Reliability contract (libs/rabbitmq)
 
-| Table | Used by | Purpose |
-|-------|---------|---------|
-| `flashes` | database-engine, neynar-engine | All flash records with `ipfs_cid` |
-| `flashcastr_flashes` | neynar-engine | Tracks which flashes were cast (flash_id, user_fid, cast_hash) |
-| `flashcastr_users` | neynar-engine | Registered users (fid, username, encrypted signer_uuid, auto_cast) |
+- **Publisher** uses a confirm channel; `publish()` resolves only on broker ack, rejects on nack or after `confirmTimeoutMs` (10s). Reconnects lazily.
+- **Consumer** (`FlashcastrConsumer`, Template Method): subclasses implement `handleMessage`; failures go through one policy:
+  - `TransientError(msg, retryAfterMs)` → sleep, requeue, no attempt consumed (image-engine uses it while the IPFS circuit is open).
+  - `FatalMessageError` or `shouldRequeueOnFailure() === false` → dead-letter immediately.
+  - otherwise → exponential backoff (1s→30s) and requeue until `maxAttempts` (default 5, env `CONSUMER_MAX_ATTEMPTS`; image-engine 10), then dead-letter.
+  - Malformed / non-envelope bodies → dead-letter.
+  - Attempts are tracked in-process by `messageId` (requeue does not add `x-death`).
+- `manualAck: true` (database-engine) hands `ack/requeue/deadLetter` to the handler; settles are ignored if the delivery channel has been replaced (broker redelivers).
+- Recovers from connection close, channel close, and broker-side consumer cancel; connect races a 20s handshake deadline.
+- `isConsuming()` feeds `/health`; `observeQueueDepths()` exports `rabbitmq_queue_messages{queue}` incl. `flashcastr.dead-letters`.
+- Queue args (`x-max-length: 100000`, DLX) cannot change without recreating queues; overflow is drop-head → dead-lettered. Nothing consumes the DLQ: watch the gauge, replay with the script.
 
-### RabbitMQ Topology
+## Engine specifics
 
-Defined in `libs/rabbitmq/src/topology.ts`. Exchange: `flashcastr.events` (topic). Queues:
-- `flash-engine.flash-received` (routing key: `flash.received`)
-- `image-engine.image-pinned` (routing key: `image.pinned`)
-- `database-engine.flash-stored` (routing key: `flash.stored`)
-- `neynar-engine.flash-casted` (routing key: `flash.casted`)
-- `flashcastr.dead-letters` (routing key: `*.dead`)
+- **database-engine**: batches (`BATCH_SIZE`, `BATCH_FLUSH_INTERVAL_MS`) and acks only after the upsert AND the confirmed `flash.stored` publish; either failing requeues after `BATCH_RETRY_DELAY_MS`. Prefetch is forced to ≥ 2×BATCH_SIZE.
+- **image-engine**: `CircuitBreaker` (30 consecutive pin failures → open 5 min → half-open single trial). Download/pin retries via `withRetry`. `CONSUMER_RATE_LIMIT` req/min.
+- **neynar-engine**: user lookup by username; casts built by `buildFlashCast`; retry worker every `RETRY_INTERVAL_MS` disables `auto_cast` on revoked/403.
+- **flash-engine**: croner (`CRON_SCHEDULE`, `protect: true`), peak hours in `Europe/Paris`, in-memory `recentFlashIds` dedupe (restart re-publishes; downstream is idempotent). Exits if the users consumer can't start.
+- **api**: `withApiKey` (constant-time, `x-api-key`) on `setUserAutoCast`/`deleteUser`; `withRateLimit` per client IP on `initiateSignup` (creates a Neynar-sponsored signer, billed in credits) and `saveFlashIdentification`. `WhereBuilder` + `clampLimit` (max 500) for list queries; `createCache` keyed by args. Subscriptions bridge through `SubscriptionConsumer`. `/health` = Postgres (503 on error) + subscription consumer state. Tracing preloaded via `instrumentation.ts` then `server.ts` is dynamically imported.
 
-All queues have DLQ via `x-dead-letter-exchange: flashcastr.dlx` and `x-max-length: 100000`.
+## Process lifecycle (libs/runtime)
 
-### Key Design Decisions
+`runService(name, { registry, metricsPort, healthChecks, start })`: serves `/metrics` + `/health` (503 only on `error`), runs `onShutdown` steps in reverse on SIGINT/SIGTERM, flushes Loki, exits 1 on unhandled rejection/exception. Register shutdown steps outermost-first (pool, publisher, consumer).
 
-- **No temporal coupling:** Old system waited 3 min between storing and casting. New system is fully event-driven — neynar-engine only receives messages after IPFS CID is populated.
-- **Idempotency:** DB uses `ON CONFLICT DO UPDATE`, Pinata deduplicates by content hash, neynar-engine checks for existing `cast_hash` before casting.
-- **Circuit breakers:** image-engine has IPFS circuit breaker (opens after 30 consecutive failures, resets after 5 min).
-- **Consumer recovery:** `FlashcastrConsumer` recovers from *channel* death and broker-side consumer cancellation, not just connection loss — a dead channel on a live TCP connection leaves the process "up" with zero consumers and silently backs up the queue (caused a ~27h image-engine outage, 17k backlog). Connect also races an explicit handshake deadline; amqplib's `timeout` only covers TCP.
-- **Batch processing:** database-engine accumulates messages and batch-inserts (configurable `BATCH_SIZE`, default 50).
-- **Retry:** neynar-engine runs a periodic retry worker (every 5 min) for failed casts from last 7 days.
+## Database
 
-### Shared Libraries
+| Table | Notes |
+|-------|-------|
+| `flashes` | upsert on `flash_id`, `ipfs_cid` only ever overwritten with a non-empty value |
+| `flashcastr_flashes` | `cast_hash NULL` = pending retry; has `deleted` |
+| `flashcastr_users` | encrypted `signer_uuid` (AES-256-GCM, `SIGNER_ENCRYPTION_KEY`), `auto_cast`, `deleted`. Deletes are hard (`deleteWithFlashes` transaction); `deleted=false` filters are legacy but kept everywhere |
+| `flash_identifications` | upsert on `source_ipfs_cid` |
 
-| Library | Path | Key Exports |
-|---------|------|-------------|
-| `@flashcastr/shared-types` | `libs/shared-types` | `Flash`, `FlashcastrFlash`, `FlashcastrUser`, `MessageEnvelope`, payload types, `EVENTS` |
-| `@flashcastr/rabbitmq` | `libs/rabbitmq` | `FlashcastrPublisher`, `FlashcastrConsumer`, `setupTopology`, `QUEUES`, `ROUTING_KEYS`, `EXCHANGES` |
-| `@flashcastr/database` | `libs/database` | `getPool`, `closePool`, `PostgresFlashesDb`, `FlashcastrFlashesDb`, `FlashcastrUsersDb` |
-| `@flashcastr/proxy` | `libs/proxy` | `ProxyRotator` (supports Oxylabs, failure tracking, rotation) |
-| `@flashcastr/metrics` | `libs/metrics` | `createMetricsRegistry`, `startMetricsServer`, re-exports `Counter`, `Gauge`, `Histogram` |
-| `@flashcastr/config` | `libs/config` | `loadConfig`, `requireEnv`, `optionalEnv`, `intEnv` |
-| `@flashcastr/health` | `libs/health` | `startHealthServer` |
-| `@flashcastr/logger` | `libs/logger` | `createLogger` (with Loki shipping when `LOKI_URL` is set) |
-| `@flashcastr/crypto` | `libs/crypto` | `decrypt` (AES-256-GCM) |
+No schema source in repo; tables pre-exist in Railway Postgres.
 
-### Deployment
+## Deployment
 
-- **Railway:** flash-engine, database-engine, neynar-engine, api, agent-invaders — auto-deploy on push to main with watch paths (agent-invaders: `apps/agent-invaders/railway.json`, Dockerfile path + watch patterns)
-- **Digital Ocean:** image-engine — GitHub Action at `.github/workflows/deploy-image-engine.yml`
-- **Dockerfiles:** each service has its own at `apps/<service>/Dockerfile` (multi-stage, node:20-slim)
-- **Infrastructure:** Existing Railway project has Postgres + RabbitMQ already running
+- Railway (Dockerfile per app, auto-deploy on main): flash-engine, database-engine, neynar-engine, api, agent-invaders. Railway service settings own Dockerfile path/watch patterns.
+- DigitalOcean droplet via `deploy-image-engine.yml` (ssh + pm2): image-engine. The droplet's Node must be ≥22.
+- CI: `npm run typecheck` + `npm test` on push/PR.
 
-### Environment Variables
+## Env
 
-See `.env.example` for full list. Critical per-service:
-- **flash-engine:** `RABBITMQ_URL`, `PROXY_LIST`
-- **image-engine:** `RABBITMQ_URL`, `PINATA_JWT`, `PROXY_LIST`, `CONSUMER_CONCURRENCY`
-- **database-engine:** `RABBITMQ_URL`, `DATABASE_URL`, `BATCH_SIZE`, `DB_POOL_MAX`
-- **neynar-engine:** `RABBITMQ_URL`, `DATABASE_URL`, `NEYNAR_API_KEY`, `SIGNER_ENCRYPTION_KEY`
-- **api:** `RABBITMQ_URL`, `DATABASE_URL`, `PORT` (default 4000), `METRICS_PORT` (default 9094)
-- **agent-invaders:** `DATABASE_URL`, `NEYNAR_API_KEY`, `FIREWORKS_API_KEY`, `FARCASTER_FID`, `FARCASTER_SIGNER_PRIVATE_KEY`, `PORT`; optional `NEYNAR_WEBHOOK_SECRET`, `ADMIN_TOKEN`, `TAVILY_API_KEY`
-- **All (optional):** `LOKI_URL` for log shipping to Loki
+See `.env.example`. Hardening knobs: `API_KEY`, `TRUST_PROXY_HOPS`, `RATE_LIMIT_SIGNUP_PER_10MIN`, `RATE_LIMIT_IDENTIFICATION_PER_MIN`, `CORS_ORIGINS`, `GRAPHQL_INTROSPECTION`, `CONSUMER_MAX_ATTEMPTS`, `BATCH_RETRY_DELAY_MS`, `TRENDING_CACHE_TTL_MS`.
 
-### Code Lineage
+## Gotchas
 
-This codebase was split from:
-- `invaders.producer` — flash-engine (API fetching), neynar-engine (Farcaster casting), parts of database-engine
-- `invaders.consumer` — image-engine (image download + IPFS pinning), parts of database-engine (batch updates)
-- `flashcastr.api` — api (GraphQL API, migrated into monorepo)
+- Frontend calls `initiateSignup`, `pollSignupStatus`, `saveFlashIdentification` from the browser with no key; never put `withApiKey` on them.
+- `flashcastr_flashes.deleted` / `flashcastr_users.deleted` exist but nothing sets them true anymore.
+- `getFid()` (api) is memoized per process; the developer mnemonic is only read there.
+- Neynar `PostCastReqBodyEmbeds` types every embed field as required; `buildFlashCast` casts a url-only embed.
+- Prometheus `operation_name` label is the schema root field, not the client operation name.
 
 <!-- nx configuration start-->
 <!-- Leave the start & end comments to automatically receive updates. -->

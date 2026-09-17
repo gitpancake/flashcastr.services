@@ -1,8 +1,4 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": {
-    "outDir": "../../dist/libs/health",
-    "rootDir": "src"
-  },
   "include": ["src/**/*.ts"]
 }

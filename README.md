@@ -1,6 +1,6 @@
 # flashcastr.services
 
-Nx monorepo containing the Flashcastr microservices pipeline. Replaces the previous `invaders.producer` + `invaders.consumer` with 5 services (4 core pipeline + 1 API) communicating via RabbitMQ.
+npm-workspaces monorepo containing the Flashcastr microservices pipeline: 4 pipeline engines and a GraphQL API communicating via RabbitMQ, plus the `agent-invaders` LangGraph agent. Node 22, TypeScript, run from source with `tsx`.
 
 ## Architecture
 
@@ -26,27 +26,7 @@ Space Invaders API
 | **image-engine** | Downloads images, pins to IPFS via Pinata, publishes `IMAGE_PINNED` | Digital Ocean |
 | **database-engine** | Batch inserts flashes into Postgres, publishes `FLASH_STORED` | Railway |
 | **neynar-engine** | Casts to Farcaster via Neynar SDK, publishes `FLASH_CASTED` + retry worker | Railway |
-| **api** | GraphQL API (Apollo Server v4) with WebSocket subscriptions | Railway |
-| **agent-flashcastr** | Standalone Farcaster reply bot + domain knowledge base (no RabbitMQ); context from OpenViking directly | Railway |
-
-### agent-flashcastr (standalone)
-
-Migrated from the `life-os` monorepo. Unlike the pipeline engines, it does **not**
-use RabbitMQ — it runs broker-less via `createProcess({ standalone: true })` from
-the vendored `@life-os/shared` lib. It polls Farcaster for mentions/replies of
-`@flashcastr` (with a Neynar `cast.created` webhook for real-time delivery on
-`PORT`), replies in-character, maintains a corrections/knowledge base, and reads
-user/agent context **directly from OpenViking** (`OPENVIKING_URL` + creds) rather
-than proxying through a context service.
-
-What it lost in the move (all were RabbitMQ-coupled): display-sync `CONTENT_READY`,
-content/highlight/roundup request-response, engagement-driven learning signals,
-admin triggers, and AI-usage cost events. The bus call-sites remain in the source
-as inert no-ops, so the integrations can be re-enabled if a broker is reintroduced.
-
-Runs via `tsx` (no build step). Needs its **own** Postgres (`DATABASE_URL`),
-`CLAUDE_CODE_OAUTH_TOKEN`, the `OPENVIKING_*` vars, and Farcaster/Neynar creds —
-see `.env.example`.
+| **api** | GraphQL API (Apollo Server 5) with WebSocket subscriptions | Railway |
 
 ### RabbitMQ Topology
 
@@ -142,11 +122,8 @@ Key variables per service:
 
 ```bash
 # Check all projects
-npx tsc --project apps/flash-engine/tsconfig.json --noEmit
-npx tsc --project apps/image-engine/tsconfig.json --noEmit
-npx tsc --project apps/database-engine/tsconfig.json --noEmit
-npx tsc --project apps/neynar-engine/tsconfig.json --noEmit
-npx tsc --project apps/api/tsconfig.json --noEmit
+npm run typecheck   # every app, lib and script
+npm test            # vitest across libs and apps
 ```
 
 ## Deployment

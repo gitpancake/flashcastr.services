@@ -2,6 +2,8 @@ import { Pool } from "pg";
 import type { FlashcastrUser } from "@flashcastr/shared-types";
 import { Postgres } from "./postgres-base.js";
 
+export type PublicFlashcastrUser = Pick<FlashcastrUser, "fid" | "username" | "auto_cast">;
+
 export class FlashcastrUsersDb extends Postgres<FlashcastrUser> {
   constructor(pool: Pool) {
     super(pool);
@@ -18,10 +20,41 @@ export class FlashcastrUsersDb extends Postgres<FlashcastrUser> {
     return this.query(`SELECT * FROM flashcastr_users ${whereClause}`, values);
   }
 
+  async getAllActive(): Promise<FlashcastrUser[]> {
+    return this.query("SELECT * FROM flashcastr_users WHERE deleted = false");
+  }
+
+  /** Public projection (no signer) of active users, optionally filtered by exact username and/or fid. */
+  async listPublic(filter: { username?: string; fid?: number } = {}): Promise<PublicFlashcastrUser[]> {
+    const conditions = ["deleted = false"];
+    const params: unknown[] = [];
+
+    if (filter.username) {
+      params.push(filter.username);
+      conditions.push(`username = $${params.length}`);
+    }
+    if (typeof filter.fid === "number") {
+      params.push(filter.fid);
+      conditions.push(`fid = $${params.length}`);
+    }
+
+    return this.query<PublicFlashcastrUser>(
+      `SELECT fid, username, auto_cast FROM flashcastr_users WHERE ${conditions.join(" AND ")}`,
+      params
+    );
+  }
+
   async getByFid(fid: number): Promise<FlashcastrUser | null> {
     return this.queryOne(
       "SELECT * FROM flashcastr_users WHERE fid = $1 AND deleted = false",
       [fid]
+    );
+  }
+
+  async getByUsername(username: string): Promise<FlashcastrUser | null> {
+    return this.queryOne(
+      "SELECT * FROM flashcastr_users WHERE LOWER(username) = LOWER($1) AND deleted = false LIMIT 1",
+      [username]
     );
   }
 
@@ -54,5 +87,13 @@ export class FlashcastrUsersDb extends Postgres<FlashcastrUser> {
       [fid]
     );
     if (result.length === 0) throw new Error("No user found with the provided fid to delete");
+  }
+
+  async deleteWithFlashes(fid: number): Promise<void> {
+    await this.transaction(async (client) => {
+      await client.query("DELETE FROM flashcastr_flashes WHERE user_fid = $1", [fid]);
+      const deleted = await client.query("DELETE FROM flashcastr_users WHERE fid = $1 RETURNING fid", [fid]);
+      if (deleted.rowCount === 0) throw new Error("No user found with the provided fid to delete");
+    });
   }
 }

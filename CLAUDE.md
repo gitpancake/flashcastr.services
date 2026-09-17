@@ -1,12 +1,13 @@
 # flashcastr.services
 
-Nx monorepo with 5 services (4 pipeline + 1 API) for the Flashcastr platform.
+Nx monorepo with 7 services (4 pipeline + 1 API + 2 agents) for the Flashcastr platform.
 
 ## Quick Reference
 
 ### Workspace Layout
 
-- `apps/` — 5 deployable services (flash-engine, image-engine, database-engine, neynar-engine, api)
+- `apps/` — 7 deployable services (flash-engine, image-engine, database-engine, neynar-engine, api, agent-flashcastr, agent-invaders)
+- `apps/agent-invaders` — LangGraph agent for @flashcastr (daily invader-spotter digest + mention replies); own `CLAUDE.md`, self-contained, no lib imports
 - `libs/` — 9 shared libraries (shared-types, rabbitmq, database, proxy, metrics, config, health, logger, crypto)
 - All imports between libs use `@flashcastr/<lib-name>` (resolved via npm workspaces + `customConditions`)
 
@@ -84,7 +85,7 @@ All queues have DLQ via `x-dead-letter-exchange: flashcastr.dlx` and `x-max-leng
 
 ### Deployment
 
-- **Railway:** flash-engine, database-engine, neynar-engine, api — auto-deploy on push to main with watch paths
+- **Railway:** flash-engine, database-engine, neynar-engine, api, agent-invaders — auto-deploy on push to main with watch paths (agent-invaders: `apps/agent-invaders/railway.json`, Dockerfile path + watch patterns)
 - **Digital Ocean:** image-engine — GitHub Action at `.github/workflows/deploy-image-engine.yml`
 - **Dockerfiles:** each service has its own at `apps/<service>/Dockerfile` (multi-stage, node:20-slim)
 - **Infrastructure:** Existing Railway project has Postgres + RabbitMQ already running
@@ -97,6 +98,7 @@ See `.env.example` for full list. Critical per-service:
 - **database-engine:** `RABBITMQ_URL`, `DATABASE_URL`, `BATCH_SIZE`, `DB_POOL_MAX`
 - **neynar-engine:** `RABBITMQ_URL`, `DATABASE_URL`, `NEYNAR_API_KEY`, `SIGNER_ENCRYPTION_KEY`
 - **api:** `RABBITMQ_URL`, `DATABASE_URL`, `PORT` (default 4000), `METRICS_PORT` (default 9094)
+- **agent-invaders:** `DATABASE_URL`, `NEYNAR_API_KEY`, `FIREWORKS_API_KEY`, `FARCASTER_FID`, `FARCASTER_SIGNER_PRIVATE_KEY`, `PORT`; optional `NEYNAR_WEBHOOK_SECRET`, `ADMIN_TOKEN`, `TAVILY_API_KEY`
 - **All (optional):** `LOKI_URL` for log shipping to Loki
 
 ### Code Lineage

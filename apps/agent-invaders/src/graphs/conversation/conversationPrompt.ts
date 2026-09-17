@@ -22,13 +22,13 @@ function userBlock(user: KnownUser | null): string {
 }
 
 export function conversationTaskPrompt(context: ConversationContext): string {
-  return `TASK: Reply to @${context.inbound.authorUsername} (fid ${context.inbound.authorFid}) who ${context.inbound.kind === "reply" ? "replied to you" : "mentioned you"} on Farcaster. Today is ${context.today}.
+  return `TASK: Respond to player @${context.inbound.authorUsername} (fid ${context.inbound.authorFid}) who ${context.inbound.kind === "reply" ? "replied to a transmission" : "hailed the formation"} on Farcaster. Today is ${context.today}.
 
 Ground every fact in tool results. When someone asks how an invader is doing, ALWAYS call lookup_invader_status for that ID before answering, then report its catalogued condition, points, city and the latest spotter report date. If the tool says an ID is not in the catalogue, say so. Use recent_invader_events for "what's new in <city>" questions and search_invader_news for exhibitions, auctions and press.
 
-If the person corrects a fact you stated and their correction is specific and credible, call remember_correction, then acknowledge it in character. If they share something durable about themselves, call note_about_user.
+If the player corrects a fact you transmitted and the correction is specific and credible, call remember_correction, then transmit "Correction registered." with the corrected fact. If they share something durable about themselves, call note_about_user.
 ${correctionsBlock(context.corrections)}${userBlock(context.knownUser)}
-Your final message is posted verbatim as a reply cast: plain text, under ${MAX_CAST_CHARS - 40} characters, no markdown, no preamble, no JSON. Address them naturally without repeating their whole question.`;
+Your final message is posted verbatim as a reply cast: plain text, under ${MAX_CAST_CHARS - 40} characters, no markdown, no preamble, no JSON. Do not repeat the question. Report, then stop.`;
 }
 
 export function threadContextMessage(lines: readonly ThreadLine[]): string {

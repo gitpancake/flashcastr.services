@@ -11,6 +11,7 @@
     "test": "vitest run",
     "digest": "npx tsx src/cli.ts digest",
     "status": "npx tsx src/cli.ts status",
-    "news": "npx tsx src/cli.ts news"
+    "news": "npx tsx src/cli.ts news",
+    "preview": "npx tsx src/cli.ts preview"
   }
 }

@@ -5,6 +5,7 @@ import { describeStatus } from "./invaders/invaderStatus.js";
 import { InvaderSpotterClient } from "./invaders/invaderSpotterClient.js";
 import { InvaderSpotterSession } from "./invaders/invaderSpotterSession.js";
 import { createLogger } from "./logging/logger.js";
+import { previewDigest, previewReply } from "./preview.js";
 
 async function runDigest(): Promise<void> {
   const env = loadEnv();
@@ -29,6 +30,8 @@ async function runNews(): Promise<void> {
 const [command, ...rest] = process.argv.slice(2);
 const commands: Record<string, () => Promise<void>> = {
   digest: runDigest,
+  preview: () => previewDigest(rest[0] ?? new Date().toISOString().slice(0, 10)),
+  reply: () => previewReply(rest.join(" ") || "how's PA_04 doing?"),
   status: () => runStatus(rest),
   news: runNews,
 };

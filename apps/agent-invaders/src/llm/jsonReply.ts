@@ -16,7 +16,7 @@ function stripFences(text: string): string {
 function firstJsonObject(text: string): string {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
-  if (start === -1 || end === -1 || end < start) throw new Error("model reply contains no JSON object");
+  if (start === -1 || end === -1 || end < start) throw new Error(`model reply contains no JSON object: ${JSON.stringify(text.slice(0, 300))}`);
   return text.slice(start, end + 1);
 }
 

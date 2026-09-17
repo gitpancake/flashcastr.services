@@ -16,7 +16,7 @@ export class FireworksModelFactory implements LanguageModelFactory {
       model: this.env.FIREWORKS_MODEL,
       apiKey: this.env.FIREWORKS_API_KEY,
       temperature: purpose === "compose" ? 0.7 : 0.5,
-      maxTokens: 1024,
+      maxTokens: 4096,
       maxRetries: 3,
       configuration: { baseURL: this.env.FIREWORKS_BASE_URL },
     });

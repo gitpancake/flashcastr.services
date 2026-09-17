@@ -22,11 +22,15 @@ LangGraph + TypeScript agent for the @flashcastr Farcaster account, living in th
 - `PostgresStore` namespace labels cannot contain periods; `AgentMemory` rewrites them, so keep source labels simple anyway.
 - `MentionPoller` ignores notifications older than two poll intervals at boot; a fresh deploy must not re-answer the backlog the previous deployment already handled.
 - Checkpointer schema `langgraph`, store schema `langgraph_store`; both `setup()` on boot. App tables in `public` via `ensureSchema`.
+- Persona = the Space Invaders game swarm (hive-mind transmissions, "we", fixed fact order, tempo as the only emotion). Henry rejected a chatty hunter voice as "too AI"; preview before changing it.
+- GLM on Fireworks spends output tokens on reasoning; `maxTokens` below ~4096 yields an empty reply and "model reply contains no JSON object".
 - Fireworks is used through `ChatOpenAI` with `configuration.baseURL`; default model `accounts/fireworks/models/glm-5p3`.
 
 ## Commands
 
 ```bash
+npm run preview -w @flashcastr/agent-invaders                       # compose today's digest with the live model, no publish (needs FIREWORKS_API_KEY)
+npx tsx apps/agent-invaders/src/cli.ts reply "how's PA_04 doing?"   # same for a reply
 npm run typecheck -w @flashcastr/agent-invaders && npm test -w @flashcastr/agent-invaders
 npm run status -w @flashcastr/agent-invaders -- PA_04 LDN_01
 docker build -f apps/agent-invaders/Dockerfile .   # from repo root

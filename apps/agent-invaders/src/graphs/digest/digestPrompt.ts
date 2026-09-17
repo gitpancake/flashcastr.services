@@ -44,7 +44,7 @@ export function digestTaskPrompt(facts: DigestFacts): string {
   const statuses = facts.headlineStatuses.map(describeStatus).join("\n");
   const previous = facts.previousDigests.map((digest) => `- ${digest.date}: ${digest.text}`).join("\n");
   const feedback = facts.revisionFeedback.length ? `\nEDITOR FEEDBACK ON YOUR LAST ATTEMPT (fix all of it):\n- ${facts.revisionFeedback.join("\n- ")}` : "";
-  return `TASK: Write today's (${facts.date}) daily Space Invader update cast for the /invaders channel.
+  return `TASK: Broadcast today's (${facts.date}) transmission on the state of the invasion for the /invaders channel.
 
 FACTS FROM invader-spotter.art (last 48h of catalogue changes; these are the ONLY invader IDs you may mention):
 ${eventLines(facts.events) || "(no catalogue changes)"}
@@ -58,11 +58,11 @@ ${statuses || "(none looked up)"}
 FRESH NEWS FROM THE WIDER WEB (unseen until today; mention only if genuinely about the artist Invader or the hunt):
 ${newsLines(facts.newsItems) || "(nothing new)"}
 
-YOUR RECENT CASTS (do not repeat their angle or phrasing):
+YOUR RECENT TRANSMISSIONS (do not repeat their content or phrasing):
 ${previous || "(none)"}
 ${feedback}
 
-Write ONE cast under ${MAX_CAST_CHARS - 40} characters. Lead with the most consequential change. Cite invader IDs exactly as given. Optionally pick ONE embed: a news URL from the list above, or leave embeds empty.
+Write ONE transmission under ${MAX_CAST_CHARS - 40} characters. Lead with the most consequential change to the formation. Cite unit IDs exactly as given. Optionally pick ONE embed: a news URL from the list above, or leave embeds empty.
 
 Reply with JSON only: {"text": "<cast>", "embedUrl": "<url or null>"}`;
 }

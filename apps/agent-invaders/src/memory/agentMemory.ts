@@ -27,6 +27,10 @@ const STATUS_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_CORRECTIONS = 30;
 const MAX_USER_NOTES = 10;
 
+function namespaceLabel(label: string): string {
+  return label.replace(/\./g, "-");
+}
+
 function keyFor(url: string): string {
   return createHash("sha256").update(url).digest("hex").slice(0, 32);
 }
@@ -35,14 +39,14 @@ export class AgentMemory {
   constructor(private readonly store: BaseStore, private readonly clock: () => Date = () => new Date()) {}
 
   async hasSeen(item: NewsItem): Promise<boolean> {
-    const existing = await this.store.get(["seen", item.sourceLabel], keyFor(item.url));
+    const existing = await this.store.get(["seen", namespaceLabel(item.sourceLabel)], keyFor(item.url));
     return existing !== null;
   }
 
   async markSeen(items: readonly NewsItem[]): Promise<void> {
     const seenAt = this.clock().toISOString();
     for (const item of items) {
-      await this.store.put(["seen", item.sourceLabel], keyFor(item.url), { url: item.url, title: item.title, seenAt });
+      await this.store.put(["seen", namespaceLabel(item.sourceLabel)], keyFor(item.url), { url: item.url, title: item.title, seenAt });
     }
   }
 

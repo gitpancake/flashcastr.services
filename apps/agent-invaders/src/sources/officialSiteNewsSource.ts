@@ -13,14 +13,14 @@ export function parseOfficialNews(html: string): NewsItem[] {
     const title = stripTags(headline!);
     if (!title) continue;
     const link = FIRST_LINK.exec(tail!)?.[1] ?? NEWS_URL;
-    items.push({ sourceLabel: "space-invaders.com", url: `${link}#${encodeURIComponent(title)}`, title, summary: title, publishedAt: null });
+    items.push({ sourceLabel: "official-site", url: `${link}#${encodeURIComponent(title)}`, title, summary: title, publishedAt: null });
     if (items.length === MAX_ITEMS) break;
   }
   return items;
 }
 
 export class OfficialSiteNewsSource implements NewsSource {
-  readonly label = "space-invaders.com";
+  readonly label = "official-site";
 
   async fetchRecent(): Promise<NewsItem[]> {
     const response = await fetch(NEWS_URL, { headers: { "User-Agent": "Mozilla/5.0 (compatible; flashcastr-agent/0.1)" } });

@@ -8,6 +8,7 @@ export interface InboundCast {
   readonly authorUsername: string;
   readonly text: string;
   readonly kind: InboundKind;
+  readonly castAt: string;
   readonly receivedAt: string;
 }
 
@@ -16,6 +17,7 @@ interface CastLike {
   readonly thread_hash?: string | null;
   readonly parent_hash?: string | null;
   readonly text: string;
+  readonly timestamp?: string;
   readonly author: { readonly fid: number; readonly username?: string | null };
 }
 
@@ -28,6 +30,7 @@ export function inboundCastFrom(cast: CastLike, receivedAt: string): InboundCast
     authorUsername: cast.author.username ?? `fid:${cast.author.fid}`,
     text: cast.text,
     kind: cast.parent_hash ? "reply" : "mention",
+    castAt: cast.timestamp ?? receivedAt,
     receivedAt,
   };
 }

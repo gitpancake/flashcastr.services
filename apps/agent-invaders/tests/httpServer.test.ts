@@ -25,7 +25,7 @@ describe("http server", () => {
     const body = JSON.stringify(castEvent);
     const response = await app.request("/webhooks/neynar", { method: "POST", body, headers: signed(body) });
     expect(response.status).toBe(200);
-    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ hash: "0xabc", threadHash: "0xroot", kind: "mention", authorFid: 42, receivedAt: "2026-09-16T10:00:00.000Z" }));
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ hash: "0xabc", threadHash: "0xroot", kind: "mention", authorFid: 42, castAt: "2026-09-16T10:00:00.000Z", receivedAt: "2026-09-16T10:00:00.000Z" }));
   });
 
   it("rejects an unsigned webhook", async () => {

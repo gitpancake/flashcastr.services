@@ -19,6 +19,8 @@ LangGraph + TypeScript agent for the @flashcastr Farcaster account, living in th
 - The search form takes city checkboxes by code; Paris must be sent as every `PA01..PA95` district (`searchFormCodesFor`). `numero` accepts `4; 12; 35-157`.
 - `news.php` splits long entries over several `<p class='news'>` paragraphs and mixes several verbs in one line; kind is decided per anchor from the preceding text, inheriting across continuation paragraphs.
 - Grounding: `GroundingValidator` rejects any invader ID absent from the run's evidence. Add IDs to evidence by returning them from tools, never by widening the allow-list.
+- `PostgresStore` namespace labels cannot contain periods; `AgentMemory` rewrites them, so keep source labels simple anyway.
+- `MentionPoller` ignores notifications older than two poll intervals at boot; a fresh deploy must not re-answer the backlog the previous deployment already handled.
 - Checkpointer schema `langgraph`, store schema `langgraph_store`; both `setup()` on boot. App tables in `public` via `ensureSchema`.
 - Fireworks is used through `ChatOpenAI` with `configuration.baseURL`; default model `accounts/fireworks/models/glm-5p3`.
 

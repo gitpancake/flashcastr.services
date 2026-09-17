@@ -2,7 +2,10 @@
   "name": "@flashcastr/source",
   "version": "0.0.0",
   "license": "MIT",
-  "scripts": {},
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
   "private": true,
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",

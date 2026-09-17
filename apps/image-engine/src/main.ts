@@ -155,7 +155,7 @@ class ImageEngineConsumer extends FlashcastrConsumer<FlashReceivedPayload> {
 
     // Upload to IPFS via Pinata
     const filename = flash.img.split("/").pop() || `image_${flash.flash_id}.jpg`;
-    const contentType = response.headers["content-type"] || "image/jpeg";
+    const contentType = String(response.headers["content-type"] ?? "image/jpeg");
 
     let cid: string;
     try {

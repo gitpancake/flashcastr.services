@@ -85,7 +85,7 @@ class FlashEngineUsersConsumer extends FlashcastrConsumer<UsersBroadcastPayload>
     log.info(`Received users broadcast: ${registeredPlayers.size} registered players (source: ${envelope.source})`);
   }
 
-  protected onReconnect(): void {
+  protected override onReconnect(): void {
     publisher.publish(ROUTING_KEYS.USERS_REQUEST, {}).then(() => {
       usersRequestTotal.inc();
       log.info("Re-requested users after reconnect");

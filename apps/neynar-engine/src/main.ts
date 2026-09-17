@@ -3,6 +3,7 @@ config();
 
 import type { ConsumeMessage } from "amqplib";
 import { NeynarAPIClient } from "@neynar/nodejs-sdk";
+import type { PostCastReqBodyEmbeds } from "@neynar/nodejs-sdk/build/api/index.js";
 import { FlashcastrConsumer, FlashcastrPublisher, QUEUES, ROUTING_KEYS } from "@flashcastr/rabbitmq";
 import { getPool, FlashcastrFlashesDb, FlashcastrUsersDb, closePool } from "@flashcastr/database";
 import { decrypt } from "@flashcastr/crypto";
@@ -28,6 +29,17 @@ function formatError(err: unknown): string {
 
 const log = createLogger("neynar-engine");
 const registry = createMetricsRegistry("neynar-engine");
+
+const CAST_CHANNEL_ID = "invaders";
+
+function buildFlashCast(signerUuid: string, flashId: number, city: string) {
+  return {
+    signerUuid,
+    text: `I just flashed an Invader in ${city}! 👾`,
+    embeds: [{ url: `https://www.flashcastr.app/flash/${flashId}` } as PostCastReqBodyEmbeds],
+    channelId: CAST_CHANNEL_ID,
+  };
+}
 
 const castsPublished = new Counter({
   name: "neynar_engine_casts_published_total",
@@ -111,12 +123,9 @@ class NeynarEngineConsumer extends FlashcastrConsumer<FlashStoredPayload> {
       try {
         const signerUuid = decrypt(appUser.signer_uuid, SIGNER_ENCRYPTION_KEY);
 
-        const cast = await neynarClient.publishCast({
-          signerUuid,
-          text: `I just flashed an Invader in ${payload.city}! 👾`,
-          embeds: [{ url: `https://www.flashcastr.app/flash/${payload.flash_id}` }],
-          channelId: "invaders",
-        });
+        const cast = await neynarClient.publishCast(
+          buildFlashCast(signerUuid, payload.flash_id, payload.city)
+        );
 
         castHash = cast.cast.hash;
         castsPublished.inc();
@@ -170,12 +179,9 @@ async function retryFailedCasts(): Promise<void> {
         const f = flash as Record<string, unknown>;
         const signerUuid = decrypt(f.signer_uuid as string, SIGNER_ENCRYPTION_KEY);
 
-        const cast = await neynarClient.publishCast({
-          signerUuid,
-          text: `I just flashed an Invader in ${f.city}! 👾`,
-          embeds: [{ url: `https://www.flashcastr.app/flash/${f.flash_id}` }],
-          channelId: "invaders",
-        });
+        const cast = await neynarClient.publishCast(
+          buildFlashCast(signerUuid, f.flash_id as number, f.city as string)
+        );
 
         await flashcastrFlashesDb.updateCastHash(f.flash_id as number, cast.cast.hash);
         successCount++;

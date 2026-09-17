@@ -2,14 +2,15 @@ import { config } from "dotenv";
 config();
 
 import { Cron } from "croner";
-import type { ConsumeMessage } from "amqplib";
-import { FlashcastrPublisher, FlashcastrConsumer, ROUTING_KEYS, QUEUES, observeQueueDepths } from "@flashcastr/rabbitmq";
+import { FlashcastrPublisher, ROUTING_KEYS } from "@flashcastr/rabbitmq";
+import { getPool, closePool, FlashcastrUsersDb } from "@flashcastr/database";
 import { createMetricsRegistry, Counter, Gauge } from "@flashcastr/metrics";
 import { runService } from "@flashcastr/runtime";
 import { createLogger } from "@flashcastr/logger";
 import { intEnv, optionalEnv } from "@flashcastr/config";
-import type { FlashReceivedPayload, MessageEnvelope, UsersBroadcastPayload } from "@flashcastr/shared-types";
+import type { FlashReceivedPayload } from "@flashcastr/shared-types";
 import SpaceInvadersAPI, { type FlashInvaderFlash } from "./space-invaders-api.js";
+import { loadRegisteredPlayers } from "./users-loader.js";
 
 const log = createLogger("flash-engine");
 const registry = createMetricsRegistry("flash-engine");
@@ -45,15 +46,9 @@ const registeredPlayersGauge = new Gauge({
   registers: [registry],
 });
 
-const usersReceivedTotal = new Counter({
-  name: "flash_engine_users_received_total",
-  help: "Times a users.broadcast was received",
-  registers: [registry],
-});
-
-const usersRequestTotal = new Counter({
-  name: "flash_engine_users_request_total",
-  help: "Times a users.request was published",
+const usersRefreshedTotal = new Counter({
+  name: "flash_engine_users_refreshed_total",
+  help: "Times the registered players cache was refreshed from Postgres",
   registers: [registry],
 });
 
@@ -61,38 +56,34 @@ const MAX_CACHE_SIZE = 10000;
 const PEAK_START_HOUR = 6;
 const PEAK_END_HOUR = 23;
 const OFF_PEAK_SKIP_CHANCE = 0.5;
-const USERS_REFRESH_SCHEDULE = "*/30 * * * *";
+const USERS_REFRESH_SCHEDULE = "*/5 * * * *";
+const USERS_REFRESH_INTERVAL_MS = 5 * 60_000;
 
 const recentFlashIds = new Set<number>();
 let lastFlashCountValue: string | null = null;
 let consecutiveNoChanges = 0;
 let registeredPlayers = new Set<string>();
+let registeredPlayersLoadedAt: number | null = null;
 
 const publisher = new FlashcastrPublisher("flash-engine");
 const api = new SpaceInvadersAPI();
+const pool = getPool();
+const usersDb = new FlashcastrUsersDb(pool);
 
-async function requestUsers(reason: string): Promise<void> {
-  await publisher.publish(ROUTING_KEYS.USERS_REQUEST, {});
-  usersRequestTotal.inc();
-  log.info(`Published users.request (${reason})`);
-}
+let registeredPlayersRefresh: Promise<void> | null = null;
 
-class FlashEngineUsersConsumer extends FlashcastrConsumer<UsersBroadcastPayload> {
-  constructor() {
-    super("flash-engine", QUEUES.USERS_BROADCAST);
-  }
-
-  protected async handleMessage(envelope: MessageEnvelope<UsersBroadcastPayload>, _raw: ConsumeMessage): Promise<void> {
-    const { usernames } = envelope.payload;
-    registeredPlayers = new Set(usernames);
+async function refreshRegisteredPlayers(): Promise<void> {
+  if (registeredPlayersRefresh) return registeredPlayersRefresh;
+  registeredPlayersRefresh = (async () => {
+    registeredPlayers = await loadRegisteredPlayers(usersDb);
+    registeredPlayersLoadedAt = Date.now();
     registeredPlayersGauge.set(registeredPlayers.size);
-    usersReceivedTotal.inc();
-    log.info(`Received users broadcast: ${registeredPlayers.size} registered players (source: ${envelope.source})`);
-  }
-
-  protected override onReconnect(): void {
-    requestUsers("after reconnect").catch((err) => log.error("Failed to re-request users after reconnect:", err));
-  }
+    usersRefreshedTotal.inc();
+    log.info(`Refreshed registered players: ${registeredPlayers.size} from Postgres`);
+  })().finally(() => {
+    registeredPlayersRefresh = null;
+  });
+  return registeredPlayersRefresh;
 }
 
 const PARIS_HOUR_FORMAT = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Paris", hour: "numeric", hourCycle: "h23" });
@@ -185,6 +176,12 @@ async function fetchAndPublish(): Promise<void> {
     if (await publishFlash(flash)) publishCount++;
   }
 
+  const registeredPlayersStale =
+    registeredPlayersLoadedAt === null || Date.now() - registeredPlayersLoadedAt >= USERS_REFRESH_INTERVAL_MS;
+  if (registeredPlayersStale) {
+    await refreshRegisteredPlayers().catch((err) => log.error("Failed to refresh registered players before filtering:", err));
+  }
+
   for (const flash of flashes.with_paris) {
     if (recentFlashIds.has(flash.flash_id)) continue;
 
@@ -208,23 +205,29 @@ async function fetchAndPublish(): Promise<void> {
   }
 }
 
-const usersConsumer = new FlashEngineUsersConsumer();
 const schedule = optionalEnv("CRON_SCHEDULE", "*/5 * * * *");
+
+function registeredPlayersHealth(): { status: "ok" | "degraded"; message: string } {
+  if (registeredPlayersLoadedAt === null) {
+    return { status: "degraded", message: `${registeredPlayers.size} cached, never loaded` };
+  }
+  const ageMs = Date.now() - registeredPlayersLoadedAt;
+  const status = registeredPlayers.size > 0 ? "ok" : "degraded";
+  return { status, message: `${registeredPlayers.size} cached, ${Math.round(ageMs / 1000)}s old` };
+}
 
 runService("flash-engine", {
   registry,
   metricsPort: intEnv("METRICS_PORT", 9090),
   healthChecks: {
-    rabbitmq: () => ({ status: usersConsumer.isConsuming() ? "ok" : "error" }),
-    registeredPlayers: () => ({ status: registeredPlayers.size > 0 ? "ok" : "degraded", message: `${registeredPlayers.size} cached` }),
+    rabbitmq: () => ({ status: publisher.isConnected() ? "ok" : "degraded" }),
+    registeredPlayers: registeredPlayersHealth,
   },
   start: async (ctx) => {
+    ctx.onShutdown("postgres", () => closePool());
     ctx.onShutdown("publisher", () => publisher.close());
-    ctx.onShutdown("users-consumer", () => usersConsumer.close());
 
-    await usersConsumer.startConsuming();
-    await requestUsers("startup");
-    ctx.onShutdown("queue-depths", observeQueueDepths(registry, [usersConsumer]));
+    await refreshRegisteredPlayers();
 
     fetchAndPublish().catch((err) => log.error("Initial fetch failed:", err));
 
@@ -232,7 +235,7 @@ runService("flash-engine", {
       fetchAndPublish().catch((err) => log.error("Scheduled fetch failed:", err));
     });
     const usersJob = new Cron(USERS_REFRESH_SCHEDULE, () => {
-      requestUsers("periodic refresh").catch((err) => log.error("Failed to publish periodic users.request:", err));
+      refreshRegisteredPlayers().catch((err) => log.error("Periodic registered players refresh failed:", err));
     });
     ctx.onShutdown("cron", () => {
       fetchJob.stop();

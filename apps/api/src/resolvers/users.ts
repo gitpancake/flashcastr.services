@@ -2,7 +2,7 @@ import type { Pool } from "pg";
 import { GraphQLError } from "graphql";
 import { withApiKey } from "../auth.js";
 import { SlidingWindowLimiter, withRateLimit } from "../rate-limit.js";
-import { SignupOperations, broadcastUsers } from "../services/signup.js";
+import { SignupOperations } from "../services/signup.js";
 import {
   signupsInitiatedTotal,
   signupsCompletedTotal,
@@ -147,8 +147,6 @@ export function createUserResolvers(pool: Pool) {
 
         await usersDb.deleteWithFlashes(args.fid);
         usersDeletedTotal.inc();
-
-        await broadcastUsers(usersDb);
 
         return { success: true, message: "User deleted successfully" };
       }),

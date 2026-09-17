@@ -31,7 +31,6 @@ Lockfile: regenerate with `npx npm@10 install --package-lock-only` after depende
 ```
 flash-engine --flash.received--> image-engine --image.pinned--> database-engine --flash.stored--> neynar-engine --flash.casted-->
                                                                                        └--> api (graphql subscriptions)
-database-engine <--users.request-- flash-engine ; database-engine --users.broadcast--> flash-engine
 ```
 
 Envelope: `MessageEnvelope<T>` (`id`, `correlationId`, `source`, `type`, `version`, `timestamp`, `payload`). Publisher sets AMQP `messageId = envelope.id`.
@@ -55,7 +54,7 @@ Envelope: `MessageEnvelope<T>` (`id`, `correlationId`, `source`, `type`, `versio
 - **database-engine**: batches (`BATCH_SIZE`, `BATCH_FLUSH_INTERVAL_MS`) and acks only after the upsert AND the confirmed `flash.stored` publish; either failing requeues after `BATCH_RETRY_DELAY_MS`. Prefetch is forced to ≥ 2×BATCH_SIZE.
 - **image-engine**: `CircuitBreaker` (30 consecutive pin failures → open 5 min → half-open single trial). Download/pin retries via `withRetry`. `CONSUMER_RATE_LIMIT` req/min.
 - **neynar-engine**: user lookup by username; casts built by `buildFlashCast`; retry worker every `RETRY_INTERVAL_MS` disables `auto_cast` on revoked/403.
-- **flash-engine**: croner (`CRON_SCHEDULE`, `protect: true`), peak hours in `Europe/Paris`, in-memory `recentFlashIds` dedupe (restart re-publishes; downstream is idempotent). Exits if the users consumer can't start.
+- **flash-engine**: croner (`CRON_SCHEDULE`, `protect: true`), peak hours in `Europe/Paris`, in-memory `recentFlashIds` dedupe (restart re-publishes; downstream is idempotent). Reads registered players from Postgres at boot and on a periodic refresh loop (default every 5 min), with a refresh-if-stale check before each poll; exits if the initial Postgres load fails.
 - **api**: `withApiKey` (constant-time, `x-api-key`) on `setUserAutoCast`/`deleteUser`; `withRateLimit` per client IP on `initiateSignup` (creates a Neynar-sponsored signer, billed in credits) and `saveFlashIdentification`. `WhereBuilder` + `clampLimit` (max 500) for list queries; `createCache` keyed by args. Subscriptions bridge through `SubscriptionConsumer`. `/health` = Postgres (503 on error) + subscription consumer state. Tracing preloaded via `instrumentation.ts` then `server.ts` is dynamically imported.
 
 ## Process lifecycle (libs/runtime)

@@ -3,12 +3,12 @@ config();
 
 import type { ConsumeMessage } from "amqplib";
 import { FlashcastrConsumer, FlashcastrPublisher, QUEUES, ROUTING_KEYS, observeQueueDepths } from "@flashcastr/rabbitmq";
-import { getPool, PostgresFlashesDb, FlashcastrUsersDb, closePool } from "@flashcastr/database";
-import { createMetricsRegistry, Counter, Gauge } from "@flashcastr/metrics";
+import { getPool, PostgresFlashesDb, closePool } from "@flashcastr/database";
+import { createMetricsRegistry, Counter } from "@flashcastr/metrics";
 import { runService } from "@flashcastr/runtime";
 import { createLogger } from "@flashcastr/logger";
 import { intEnv } from "@flashcastr/config";
-import type { MessageEnvelope, ImagePinnedPayload, FlashStoredPayload, Flash, UsersBroadcastPayload } from "@flashcastr/shared-types";
+import type { MessageEnvelope, ImagePinnedPayload, FlashStoredPayload, Flash } from "@flashcastr/shared-types";
 
 const log = createLogger("database-engine");
 const registry = createMetricsRegistry("database-engine");
@@ -31,18 +31,6 @@ const flashesRequeued = new Counter({
   registers: [registry],
 });
 
-const usersBroadcastTotal = new Counter({
-  name: "database_engine_users_broadcast_total",
-  help: "Times users were broadcast",
-  registers: [registry],
-});
-
-const usersBroadcastCount = new Gauge({
-  name: "database_engine_users_broadcast_count",
-  help: "Number of users in last broadcast",
-  registers: [registry],
-});
-
 const BATCH_SIZE = intEnv("BATCH_SIZE", 50);
 const BATCH_FLUSH_INTERVAL = intEnv("BATCH_FLUSH_INTERVAL_MS", 5000);
 const BATCH_RETRY_DELAY_MS = intEnv("BATCH_RETRY_DELAY_MS", 5000);
@@ -56,22 +44,7 @@ interface PendingFlash {
 
 const pool = getPool();
 const flashesDb = new PostgresFlashesDb(pool);
-const usersDb = new FlashcastrUsersDb(pool);
 const publisher = new FlashcastrPublisher("database-engine");
-
-async function broadcastUsers(): Promise<void> {
-  try {
-    const users = await usersDb.getAllActive();
-    const usernames = users.map((u) => u.username.toLowerCase());
-    const payload: UsersBroadcastPayload = { usernames };
-    await publisher.publish(ROUTING_KEYS.USERS_BROADCAST, payload);
-    usersBroadcastTotal.inc();
-    usersBroadcastCount.set(usernames.length);
-    log.info(`Broadcast ${usernames.length} users`);
-  } catch (err) {
-    log.error("Failed to broadcast users:", err);
-  }
-}
 
 function toStoredPayload(flash: Flash): FlashStoredPayload {
   return {
@@ -186,19 +159,7 @@ class DatabaseEngineConsumer extends FlashcastrConsumer<ImagePinnedPayload> {
   }
 }
 
-class UsersRequestConsumer extends FlashcastrConsumer<Record<string, never>> {
-  constructor() {
-    super("database-engine", QUEUES.USERS_REQUEST);
-  }
-
-  protected async handleMessage(envelope: MessageEnvelope<Record<string, never>>, _raw: ConsumeMessage): Promise<void> {
-    log.info(`Received users.request from ${envelope.source}`);
-    await broadcastUsers();
-  }
-}
-
 const consumer = new DatabaseEngineConsumer();
-const usersRequestConsumer = new UsersRequestConsumer();
 
 runService("database-engine", {
   registry,
@@ -213,16 +174,12 @@ runService("database-engine", {
   start: async (ctx) => {
     ctx.onShutdown("postgres", () => closePool());
     ctx.onShutdown("publisher", () => publisher.close());
-    ctx.onShutdown("users-request-consumer", () => usersRequestConsumer.close());
     ctx.onShutdown("consumer", async () => {
       await consumer.flush();
       await consumer.close();
     });
 
     await consumer.startConsuming();
-    usersRequestConsumer.startConsuming().catch((err) => log.error("Failed to start users request consumer:", err));
-    ctx.onShutdown("queue-depths", observeQueueDepths(registry, [consumer, usersRequestConsumer]));
-
-    broadcastUsers().catch((err) => log.error("Initial users broadcast failed:", err));
+    ctx.onShutdown("queue-depths", observeQueueDepths(registry, [consumer]));
   },
 });

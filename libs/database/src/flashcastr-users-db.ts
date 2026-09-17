@@ -18,10 +18,21 @@ export class FlashcastrUsersDb extends Postgres<FlashcastrUser> {
     return this.query(`SELECT * FROM flashcastr_users ${whereClause}`, values);
   }
 
+  async getAllActive(): Promise<FlashcastrUser[]> {
+    return this.query("SELECT * FROM flashcastr_users WHERE deleted = false");
+  }
+
   async getByFid(fid: number): Promise<FlashcastrUser | null> {
     return this.queryOne(
       "SELECT * FROM flashcastr_users WHERE fid = $1 AND deleted = false",
       [fid]
+    );
+  }
+
+  async getByUsername(username: string): Promise<FlashcastrUser | null> {
+    return this.queryOne(
+      "SELECT * FROM flashcastr_users WHERE LOWER(username) = LOWER($1) AND deleted = false LIMIT 1",
+      [username]
     );
   }
 

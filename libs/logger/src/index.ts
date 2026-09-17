@@ -45,14 +45,13 @@ let flushTimer: ReturnType<typeof setInterval> | null = null;
 
 function startFlushTimer() {
   if (flushTimer || !getLokiUrl()) return;
-  flushTimer = setInterval(flushToLoki, BATCH_INTERVAL_MS);
-  // Don't let the timer keep the process alive
+  flushTimer = setInterval(() => { void flushToLoki(); }, BATCH_INTERVAL_MS);
   if (flushTimer && typeof flushTimer === "object" && "unref" in flushTimer) {
     flushTimer.unref();
   }
 }
 
-async function flushToLoki() {
+async function flushToLoki(): Promise<void> {
   const config = getLokiConfig();
   if (batchBuffer.length === 0 || !config) return;
 
@@ -66,25 +65,21 @@ async function flushToLoki() {
       body: JSON.stringify({ streams }),
     });
     if (!res.ok) {
-      // Log to stderr only to avoid infinite loop
-      process.stderr.write(
-        `[logger] Loki push failed: ${res.status} ${res.statusText}\n`
-      );
+      process.stderr.write(`[logger] Loki push failed: ${res.status} ${res.statusText}\n`);
     }
   } catch (err) {
-    process.stderr.write(
-      `[logger] Loki fetch error: ${err instanceof Error ? err.message : String(err)}\n`
-    );
+    process.stderr.write(`[logger] Loki fetch error: ${err instanceof Error ? err.message : String(err)}\n`);
   }
+}
+
+/** Ship any buffered log lines to Loki. Call before process.exit so the last lines are not lost. */
+export async function flushLogs(): Promise<void> {
+  await flushToLoki();
 }
 
 let lokiStatusLogged = false;
 
-function pushToLoki(
-  serviceName: string,
-  level: LogLevel,
-  message: string
-) {
+function pushToLoki(serviceName: string, level: LogLevel, message: string) {
   if (!lokiStatusLogged) {
     lokiStatusLogged = true;
     const url = getLokiUrl();
@@ -102,17 +97,33 @@ function pushToLoki(
   });
 
   if (batchBuffer.length >= BATCH_SIZE_LIMIT) {
-    flushToLoki();
+    void flushToLoki();
   } else {
     startFlushTimer();
   }
 }
 
-function formatArgs(args: unknown[]): string {
+function describeError(err: Error): string {
+  return err.stack ?? `${err.name}: ${err.message}`;
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value, (_key, nested) =>
+      nested instanceof Error ? { name: nested.name, message: nested.message, stack: nested.stack } : nested
+    );
+  } catch {
+    return String(value);
+  }
+}
+
+export function formatLogArgs(args: unknown[]): string {
   return args
-    .map((arg) =>
-      typeof arg === "object" ? JSON.stringify(arg) : String(arg)
-    )
+    .map((arg) => {
+      if (arg instanceof Error) return describeError(arg);
+      if (typeof arg === "object") return safeStringify(arg);
+      return String(arg);
+    })
     .join(" ");
 }
 
@@ -120,9 +131,8 @@ export function createLogger(serviceName: string) {
   const prefix = `[${serviceName}]`;
 
   function log(level: LogLevel, args: unknown[]) {
-    const message = formatArgs(args);
+    const message = formatLogArgs(args);
 
-    // Always write to stdout/stderr for local dev + Railway log viewer
     switch (level) {
       case "error":
         console.error(prefix, ...args);
@@ -152,9 +162,8 @@ export function createLogger(serviceName: string) {
   };
 }
 
-// Flush remaining logs before process exits
 process.on("beforeExit", () => {
-  if (getLokiUrl()) flushToLoki();
+  if (getLokiUrl()) void flushToLoki();
 });
 
 export type Logger = ReturnType<typeof createLogger>;

@@ -5,10 +5,10 @@ import type { ConsumeMessage } from "amqplib";
 import { NeynarAPIClient } from "@neynar/nodejs-sdk";
 import type { PostCastReqBodyEmbeds } from "@neynar/nodejs-sdk/build/api/index.js";
 import { FlashcastrConsumer, FlashcastrPublisher, QUEUES, ROUTING_KEYS } from "@flashcastr/rabbitmq";
-import { getPool, FlashcastrFlashesDb, FlashcastrUsersDb, closePool } from "@flashcastr/database";
+import { getPool, FlashcastrFlashesDb, FlashcastrUsersDb, closePool, type FailedCastRow } from "@flashcastr/database";
 import { decrypt } from "@flashcastr/crypto";
 import { createMetricsRegistry, startMetricsServer, Counter } from "@flashcastr/metrics";
-import { createLogger } from "@flashcastr/logger";
+import { createLogger, flushLogs } from "@flashcastr/logger";
 import { requireEnv, intEnv } from "@flashcastr/config";
 import type { AxiosError } from "axios";
 import type {
@@ -80,11 +80,7 @@ class NeynarEngineConsumer extends FlashcastrConsumer<FlashStoredPayload> {
   ): Promise<void> {
     const payload = envelope.payload;
 
-    // Find the flashcastr user for this flash's player
-    const users = await flashcastrUsersDb.getMany({});
-    const appUser = users.find(
-      (u) => u.username.toLowerCase() === payload.player.toLowerCase()
-    );
+    const appUser = await flashcastrUsersDb.getByUsername(payload.player);
 
     if (!appUser) {
       // Not a flashcastr user — skip silently
@@ -165,6 +161,17 @@ class NeynarEngineConsumer extends FlashcastrConsumer<FlashStoredPayload> {
   }
 }
 
+function isSignerRevokedError(err: unknown): boolean {
+  const message = formatError(err).toLowerCase();
+  return message.includes("revoked") || message.includes("403") || message.includes("forbidden");
+}
+
+async function disableAutoCastIfRevoked(flash: FailedCastRow, err: unknown): Promise<void> {
+  if (!isSignerRevokedError(err)) return;
+  await flashcastrUsersDb.updateAutoCast(flash.user_fid, false);
+  log.warn(`Signer for fid ${flash.user_fid} rejected the cast; auto_cast disabled`);
+}
+
 // Retry worker — runs every 5 minutes
 async function retryFailedCasts(): Promise<void> {
   try {
@@ -176,20 +183,15 @@ async function retryFailedCasts(): Promise<void> {
 
     for (const flash of failedFlashes) {
       try {
-        const f = flash as Record<string, unknown>;
-        const signerUuid = decrypt(f.signer_uuid as string, SIGNER_ENCRYPTION_KEY);
-
-        const cast = await neynarClient.publishCast(
-          buildFlashCast(signerUuid, f.flash_id as number, f.city as string)
-        );
-
-        await flashcastrFlashesDb.updateCastHash(f.flash_id as number, cast.cast.hash);
+        const signerUuid = decrypt(flash.signer_uuid, SIGNER_ENCRYPTION_KEY);
+        const cast = await neynarClient.publishCast(buildFlashCast(signerUuid, flash.flash_id, flash.city));
+        await flashcastrFlashesDb.updateCastHash(flash.flash_id, cast.cast.hash);
         successCount++;
         castsPublished.inc();
       } catch (err) {
         castsFailed.inc();
-        const f = flash as Record<string, unknown>;
-        log.error(`Retry failed for flash ${f.flash_id}: ${formatError(err)}`);
+        log.error(`Retry failed for flash ${flash.flash_id}: ${formatError(err)}`);
+        await disableAutoCastIfRevoked(flash, err);
       }
     }
 
@@ -202,7 +204,7 @@ async function retryFailedCasts(): Promise<void> {
 // Check signer statuses on startup
 async function checkSignerStatuses(): Promise<void> {
   try {
-    const users = await flashcastrUsersDb.getMany({});
+    const users = await flashcastrUsersDb.getAllActive();
     const autoCastUsers = users.filter((u) => u.auto_cast);
 
     if (autoCastUsers.length === 0) {
@@ -270,6 +272,7 @@ checkSignerStatuses().then(() => {
     await consumer.close();
     await publisher.close();
     await closePool();
+    await flushLogs();
     process.exit(0);
   };
 

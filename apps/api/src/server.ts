@@ -11,16 +11,15 @@ import type { ApolloServerPlugin, BaseContext } from "@apollo/server";
 import { makeExecutableSchema } from "@graphql-tools/schema";
 import { useServer } from "graphql-ws/use/ws";
 import { WebSocketServer } from "ws";
-import amqplib from "amqplib";
 
 import { getPool, closePool } from "@flashcastr/database";
 import { intEnv, optionalEnv } from "@flashcastr/config";
-import { createLogger } from "@flashcastr/logger";
-import { EXCHANGES, ROUTING_KEYS, QUEUES } from "@flashcastr/rabbitmq";
+import { createLogger, flushLogs } from "@flashcastr/logger";
 
 import { typeDefs } from "./schema.js";
 import { createResolvers } from "./resolvers/index.js";
-import { publish, TOPICS } from "./pubsub.js";
+import { SubscriptionConsumer } from "./subscription-consumer.js";
+import { shutdownTracing } from "./tracing.js";
 import {
   registry,
   startMetricsServer,
@@ -30,8 +29,6 @@ import {
   activeUsersTotal,
   totalFlashesCount,
 } from "./metrics.js";
-
-import type { FlashStoredPayload, FlashCastedPayload, MessageEnvelope } from "@flashcastr/shared-types";
 
 const log = createLogger("api");
 
@@ -126,71 +123,29 @@ async function updateGauges() {
   }
 }
 
-// RabbitMQ subscription consumer
-async function startSubscriptionConsumer(): Promise<amqplib.ChannelModel | null> {
+async function startSubscriptionConsumer(): Promise<SubscriptionConsumer | null> {
   if (!RABBITMQ_URL) {
     log.warn("RABBITMQ_URL not set, subscriptions will not receive live events");
     return null;
   }
 
+  const consumer = new SubscriptionConsumer(RABBITMQ_URL);
   try {
-    const conn = await amqplib.connect(RABBITMQ_URL);
-    const channel = await conn.createChannel();
-
-    // Ensure queue exists
-    await channel.assertQueue(QUEUES.API_SUBSCRIPTIONS, {
-      durable: true,
-      arguments: {
-        "x-dead-letter-exchange": EXCHANGES.DLX,
-        "x-dead-letter-routing-key": "api.subscriptions.dead",
-        "x-max-length": 10000,
-      },
-    });
-    await channel.bindQueue(QUEUES.API_SUBSCRIPTIONS, EXCHANGES.EVENTS, ROUTING_KEYS.FLASH_STORED);
-    await channel.bindQueue(QUEUES.API_SUBSCRIPTIONS, EXCHANGES.EVENTS, ROUTING_KEYS.FLASH_CASTED);
-
-    await channel.prefetch(10);
-
-    channel.consume(QUEUES.API_SUBSCRIPTIONS, (msg) => {
-      if (!msg) return;
-
-      try {
-        const envelope = JSON.parse(msg.content.toString()) as MessageEnvelope<unknown>;
-
-        if (envelope.type === ROUTING_KEYS.FLASH_STORED) {
-          const payload = envelope.payload as FlashStoredPayload;
-          publish(TOPICS.FLASH_STORED, {
-            flash_id: String(payload.flash_id),
-            city: payload.city,
-            player: payload.player,
-            img: payload.img,
-            ipfs_cid: payload.ipfs_cid,
-            timestamp: String(payload.timestamp),
-          });
-        } else if (envelope.type === ROUTING_KEYS.FLASH_CASTED) {
-          const payload = envelope.payload as FlashCastedPayload;
-          publish(TOPICS.FLASH_CASTED, {
-            flash_id: String(payload.flash_id),
-            city: payload.city,
-            player: payload.player,
-            cast_hash: payload.cast_hash,
-            user_fid: payload.user_fid,
-            user_username: payload.user_username,
-          });
-        }
-
-        channel.ack(msg);
-      } catch (err) {
-        log.error("Error processing subscription message:", err);
-        channel.nack(msg, false, false);
-      }
-    });
-
+    await consumer.startConsuming();
     log.info("RabbitMQ subscription consumer started");
-    return conn;
+    return consumer;
   } catch (err) {
     log.error("Failed to connect to RabbitMQ for subscriptions:", err);
     return null;
+  }
+}
+
+async function databaseHealth(): Promise<"ok" | "error"> {
+  try {
+    await pool.query("SELECT 1");
+    return "ok";
+  } catch {
+    return "error";
   }
 }
 
@@ -208,20 +163,19 @@ async function main() {
     })
   );
 
-  // Health check
-  app.get("/health", (_req, res) => {
-    res.json({ status: "ok", timestamp: Date.now() });
-  });
-
-  // Start metrics server
   startMetricsServer(registry, METRICS_PORT);
 
-  // Update gauges
   setInterval(updateGauges, 60000);
   updateGauges();
 
-  // Start subscription consumer
-  const rabbitConn = await startSubscriptionConsumer();
+  const subscriptionConsumer = await startSubscriptionConsumer();
+
+  app.get("/health", async (_req, res) => {
+    const database = await databaseHealth();
+    const subscriptions = !RABBITMQ_URL ? "disabled" : subscriptionConsumer?.isConsuming() ? "ok" : "degraded";
+    const status = database === "error" ? "error" : subscriptions === "degraded" ? "degraded" : "ok";
+    res.status(database === "error" ? 503 : 200).json({ status, checks: { database, subscriptions }, timestamp: Date.now() });
+  });
 
   httpServer.listen(PORT, () => {
     log.info(`GraphQL server ready at http://localhost:${PORT}/graphql`);
@@ -232,8 +186,10 @@ async function main() {
   const shutdown = async (signal: string) => {
     log.info(`Received ${signal}, shutting down...`);
     await server.stop();
-    if (rabbitConn) await rabbitConn.close();
+    if (subscriptionConsumer) await subscriptionConsumer.close();
     await closePool();
+    await shutdownTracing();
+    await flushLogs();
     process.exit(0);
   };
 

@@ -5,7 +5,7 @@ import cron from "node-cron";
 import type { ConsumeMessage } from "amqplib";
 import { FlashcastrPublisher, FlashcastrConsumer, ROUTING_KEYS, QUEUES } from "@flashcastr/rabbitmq";
 import { createMetricsRegistry, startMetricsServer, Counter, Gauge } from "@flashcastr/metrics";
-import { createLogger } from "@flashcastr/logger";
+import { createLogger, flushLogs } from "@flashcastr/logger";
 import { intEnv } from "@flashcastr/config";
 import type { FlashReceivedPayload, MessageEnvelope, UsersBroadcastPayload } from "@flashcastr/shared-types";
 import SpaceInvadersAPI from "./space-invaders-api.js";
@@ -93,10 +93,15 @@ class FlashEngineUsersConsumer extends FlashcastrConsumer<UsersBroadcastPayload>
   }
 }
 
+const PARIS_HOUR_FORMAT = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Paris", hour: "numeric", hourCycle: "h23" });
+
+export function parisHour(now = new Date()): number {
+  return parseInt(PARIS_HOUR_FORMAT.format(now), 10);
+}
+
 function isPeakFlashTime(): boolean {
-  const now = new Date();
-  const cetHour = (now.getUTCHours() + 1) % 24;
-  return cetHour >= 6 && cetHour < 23;
+  const hour = parisHour();
+  return hour >= 6 && hour < 23;
 }
 
 async function fetchAndPublish(): Promise<void> {
@@ -212,6 +217,7 @@ usersConsumer.startConsuming().then(async () => {
   log.info("Published users.request to database-engine");
 }).catch((err) => {
   log.error("Failed to start users consumer or request users:", err);
+  process.exit(1);
 });
 
 // Run immediately once (processes non-Paris flashes even without users)
@@ -238,6 +244,7 @@ const shutdown = async (signal: string) => {
   log.info(`Received ${signal}, shutting down...`);
   await usersConsumer.close();
   await publisher.close();
+  await flushLogs();
   process.exit(0);
 };
 

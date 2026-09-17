@@ -3,9 +3,9 @@ config();
 
 import type { ConsumeMessage } from "amqplib";
 import axios from "axios";
-import { FlashcastrConsumer, FlashcastrPublisher, QUEUES, ROUTING_KEYS } from "@flashcastr/rabbitmq";
+import { FlashcastrConsumer, FlashcastrPublisher, TransientError, QUEUES, ROUTING_KEYS } from "@flashcastr/rabbitmq";
 import { createMetricsRegistry, startMetricsServer, Counter, Gauge } from "@flashcastr/metrics";
-import { createLogger } from "@flashcastr/logger";
+import { createLogger, flushLogs } from "@flashcastr/logger";
 import { requireEnv, intEnv } from "@flashcastr/config";
 import { ProxyRotator } from "@flashcastr/proxy";
 import type { MessageEnvelope, FlashReceivedPayload, ImagePinnedPayload } from "@flashcastr/shared-types";
@@ -59,6 +59,8 @@ let consecutiveIpfsFailures = 0;
 let circuitBreakerOpen = false;
 let circuitBreakerOpenUntil = 0;
 const MAX_IPFS_FAILURES = 30;
+const CIRCUIT_OPEN_MS = 300000;
+const MAX_CIRCUIT_RETRY_WAIT_MS = 30000;
 
 function checkCircuitBreaker(): boolean {
   if (circuitBreakerOpen && Date.now() > circuitBreakerOpenUntil) {
@@ -109,13 +111,12 @@ const proxyRotator = new ProxyRotator();
 
 class ImageEngineConsumer extends FlashcastrConsumer<FlashReceivedPayload> {
   constructor() {
-    super("image-engine", QUEUES.FLASH_RECEIVED);
+    super("image-engine", QUEUES.FLASH_RECEIVED, { maxAttempts: intEnv("CONSUMER_MAX_ATTEMPTS", 10) });
   }
 
   protected override shouldRequeueOnFailure(error: Error): boolean {
     const msg = error.message.toLowerCase();
     if (msg.includes("already processed") || msg.includes("duplicate")) return false;
-    if (circuitBreakerOpen) return false;
     return true;
   }
 
@@ -127,7 +128,8 @@ class ImageEngineConsumer extends FlashcastrConsumer<FlashReceivedPayload> {
     const imageUrl = BASE_URL + flash.img;
 
     if (checkCircuitBreaker()) {
-      throw new Error(`Circuit breaker open - skipping flash ${flash.flash_id}`);
+      const waitMs = Math.min(Math.max(circuitBreakerOpenUntil - Date.now(), 1000), MAX_CIRCUIT_RETRY_WAIT_MS);
+      throw new TransientError(`Circuit breaker open - deferring flash ${flash.flash_id}`, waitMs);
     }
 
     await waitForRateLimit();
@@ -197,7 +199,7 @@ class ImageEngineConsumer extends FlashcastrConsumer<FlashReceivedPayload> {
       if (consecutiveIpfsFailures >= MAX_IPFS_FAILURES) {
         circuitBreakerOpen = true;
         circuitBreakerState.set(1);
-        circuitBreakerOpenUntil = Date.now() + 300000;
+        circuitBreakerOpenUntil = Date.now() + CIRCUIT_OPEN_MS;
         log.error(`Circuit breaker OPEN for 5 minutes (${consecutiveIpfsFailures} failures)`);
       }
 
@@ -236,6 +238,7 @@ const shutdown = async (signal: string) => {
   log.info(`Received ${signal}, shutting down...`);
   await consumer.close();
   await publisher.close();
+  await flushLogs();
   process.exit(0);
 };
 

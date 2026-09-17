@@ -1,5 +1,8 @@
 import axios from "axios";
 import { ProxyRotator } from "@flashcastr/proxy";
+import { createLogger } from "@flashcastr/logger";
+
+const log = createLogger("flash-engine");
 
 interface FlashInvaderResponse {
   flash_count: string;
@@ -100,7 +103,8 @@ export default class SpaceInvadersAPI {
     throw new Error("Max retries exceeded");
   }
 
-  async getFlashes(): Promise<FlashInvaderResponse | null> {
+  /** Resolves with the API payload; rethrows after failure bookkeeping so callers can count errors. */
+  async getFlashes(): Promise<FlashInvaderResponse> {
     try {
       await this.humanDelay();
 
@@ -125,7 +129,7 @@ export default class SpaceInvadersAPI {
     } catch (error: unknown) {
       this.consecutiveFailures++;
       const message = error instanceof Error ? error.message : "Unknown error";
-      console.error(`Failed to fetch flashes (failures: ${this.consecutiveFailures}): ${message}`);
+      log.warn(`Failed to fetch flashes (failures: ${this.consecutiveFailures}): ${message}`);
 
       if (this.consecutiveFailures > 5) {
         this.sessionStartTime = Date.now();
@@ -133,7 +137,7 @@ export default class SpaceInvadersAPI {
         this.consecutiveFailures = 0;
       }
 
-      return null;
+      throw error;
     }
   }
 }

@@ -13,6 +13,9 @@ import neynarClient from "../neynar/client.js";
 import { FlashcastrUsersDb } from "@flashcastr/database";
 import { decrypt } from "@flashcastr/crypto";
 import { requireEnv, intEnv } from "@flashcastr/config";
+import { createLogger } from "@flashcastr/logger";
+
+const log = createLogger("api");
 
 const TEN_MINUTES_MS = 10 * 60 * 1000;
 
@@ -23,23 +26,7 @@ export function createUserResolvers(pool: Pool) {
 
   return {
     Query: {
-      users: async (_: unknown, args: { username?: string; fid?: number }) => {
-        let sql = "SELECT fid, username, auto_cast FROM flashcastr_users WHERE deleted = false";
-        const params: unknown[] = [];
-        let paramIndex = 1;
-
-        if (args.username) {
-          sql += ` AND username = $${paramIndex++}`;
-          params.push(args.username);
-        }
-        if (typeof args.fid === "number") {
-          sql += ` AND fid = $${paramIndex++}`;
-          params.push(args.fid);
-        }
-
-        const result = await pool.query(sql, params);
-        return result.rows;
-      },
+      users: async (_: unknown, args: { username?: string; fid?: number }) => usersDb.listPublic(args),
 
       checkSignerStatus: async (_: unknown, args: { fid: number }) => {
         if (typeof args.fid !== "number") {
@@ -55,7 +42,7 @@ export function createUserResolvers(pool: Pool) {
         try {
           signerUuid = decrypt(user.signer_uuid, requireEnv("SIGNER_ENCRYPTION_KEY"));
         } catch (error) {
-          console.error(`[checkSignerStatus] Failed to decrypt signer for fid ${args.fid}:`, error);
+          log.error(`[checkSignerStatus] Failed to decrypt signer for fid ${args.fid}:`, error);
           return { ok: false, status: "DECRYPT_ERROR", fid: args.fid, message: "Failed to decrypt stored signer." };
         }
 
@@ -71,7 +58,7 @@ export function createUserResolvers(pool: Pool) {
           };
         } catch (error) {
           neynarRequestsTotal.inc({ endpoint: "lookupSigner", status: "error" });
-          console.error(`[checkSignerStatus] Neynar lookup failed for fid ${args.fid}:`, error);
+          log.error(`[checkSignerStatus] Neynar lookup failed for fid ${args.fid}:`, error);
           return {
             ok: false,
             status: "NEYNAR_LOOKUP_ERROR",
@@ -110,7 +97,7 @@ export function createUserResolvers(pool: Pool) {
                 message: "User signup finalized successfully.",
               };
             } catch (finalizationError) {
-              console.error(`[pollSignupStatus] Error finalizing signup:`, finalizationError);
+              log.error(`[pollSignupStatus] Error finalizing signup:`, finalizationError);
               return {
                 status: "ERROR_FINALIZATION",
                 fid: neynarSigner.fid,
@@ -131,7 +118,7 @@ export function createUserResolvers(pool: Pool) {
           }
         } catch (error) {
           neynarRequestsTotal.inc({ endpoint: "lookupSigner", status: "error" });
-          console.error(`[pollSignupStatus] Error looking up signer:`, error);
+          log.error(`[pollSignupStatus] Error looking up signer:`, error);
           return {
             status: "ERROR_NEYNAR_LOOKUP",
             fid: null, user: null,

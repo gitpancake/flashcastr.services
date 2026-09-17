@@ -2,6 +2,8 @@ import { Pool } from "pg";
 import type { FlashcastrUser } from "@flashcastr/shared-types";
 import { Postgres } from "./postgres-base.js";
 
+export type PublicFlashcastrUser = Pick<FlashcastrUser, "fid" | "username" | "auto_cast">;
+
 export class FlashcastrUsersDb extends Postgres<FlashcastrUser> {
   constructor(pool: Pool) {
     super(pool);
@@ -20,6 +22,26 @@ export class FlashcastrUsersDb extends Postgres<FlashcastrUser> {
 
   async getAllActive(): Promise<FlashcastrUser[]> {
     return this.query("SELECT * FROM flashcastr_users WHERE deleted = false");
+  }
+
+  /** Public projection (no signer) of active users, optionally filtered by exact username and/or fid. */
+  async listPublic(filter: { username?: string; fid?: number } = {}): Promise<PublicFlashcastrUser[]> {
+    const conditions = ["deleted = false"];
+    const params: unknown[] = [];
+
+    if (filter.username) {
+      params.push(filter.username);
+      conditions.push(`username = $${params.length}`);
+    }
+    if (typeof filter.fid === "number") {
+      params.push(filter.fid);
+      conditions.push(`fid = $${params.length}`);
+    }
+
+    return this.query<PublicFlashcastrUser>(
+      `SELECT fid, username, auto_cast FROM flashcastr_users WHERE ${conditions.join(" AND ")}`,
+      params
+    );
   }
 
   async getByFid(fid: number): Promise<FlashcastrUser | null> {

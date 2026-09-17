@@ -1,6 +1,6 @@
 # flashcastr.services
 
-Nx monorepo containing the Flashcastr microservices pipeline. Replaces the previous `invaders.producer` + `invaders.consumer` with 5 services (4 core pipeline + 1 API) communicating via RabbitMQ.
+npm-workspaces monorepo containing the Flashcastr microservices pipeline: 4 pipeline engines and a GraphQL API communicating via RabbitMQ, plus the `agent-invaders` LangGraph agent. Node 22, TypeScript, run from source with `tsx`.
 
 ## Architecture
 
@@ -26,7 +26,7 @@ Space Invaders API
 | **image-engine** | Downloads images, pins to IPFS via Pinata, publishes `IMAGE_PINNED` | Digital Ocean |
 | **database-engine** | Batch inserts flashes into Postgres, publishes `FLASH_STORED` | Railway |
 | **neynar-engine** | Casts to Farcaster via Neynar SDK, publishes `FLASH_CASTED` + retry worker | Railway |
-| **api** | GraphQL API (Apollo Server v4) with WebSocket subscriptions | Railway |
+| **api** | GraphQL API (Apollo Server 5) with WebSocket subscriptions | Railway |
 
 ### RabbitMQ Topology
 
@@ -122,11 +122,8 @@ Key variables per service:
 
 ```bash
 # Check all projects
-npx tsc --project apps/flash-engine/tsconfig.json --noEmit
-npx tsc --project apps/image-engine/tsconfig.json --noEmit
-npx tsc --project apps/database-engine/tsconfig.json --noEmit
-npx tsc --project apps/neynar-engine/tsconfig.json --noEmit
-npx tsc --project apps/api/tsconfig.json --noEmit
+npm run typecheck   # every app, lib and script
+npm test            # vitest across libs and apps
 ```
 
 ## Deployment

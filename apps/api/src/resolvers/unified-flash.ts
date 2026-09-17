@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { WhereBuilder, clampLimit, pageOffset } from "../sql/where-builder.js";
 
 interface UnifiedFlashRow {
   flash_id: string;
@@ -19,6 +20,24 @@ interface UnifiedFlashRow {
   identification_similarity: number | null;
   identification_confidence: number | null;
 }
+
+const DEFAULT_LIMIT = 20;
+
+const UNIFIED_FLASH_SELECT = `
+  SELECT
+    f.flash_id::text as flash_id, f.city, f.player, f.img, f.ipfs_cid,
+    f.text, EXTRACT(EPOCH FROM f.timestamp)::bigint::text as timestamp, f.flash_count,
+    ff.user_fid as farcaster_fid, ff.user_username as farcaster_username,
+    ff.user_pfp_url as farcaster_pfp_url, ff.cast_hash as farcaster_cast_hash,
+    fi.id as identification_id,
+    fi.matched_flash_id::text as identification_matched_flash_id,
+    fi.matched_flash_name as identification_matched_flash_name,
+    fi.similarity as identification_similarity,
+    fi.confidence as identification_confidence
+  FROM flashes f
+  LEFT JOIN flashcastr_flashes ff ON f.flash_id = ff.flash_id AND ff.deleted = false
+  LEFT JOIN flash_identifications fi ON f.ipfs_cid = fi.source_ipfs_cid
+`;
 
 function mapRow(row: UnifiedFlashRow) {
   return {
@@ -54,68 +73,20 @@ export function createUnifiedFlashResolvers(pool: Pool) {
   return {
     Query: {
       unifiedFlash: async (_: unknown, args: { flash_id: string }) => {
-        const query = `
-          SELECT
-            f.flash_id::text as flash_id, f.city, f.player, f.img, f.ipfs_cid,
-            f.text, EXTRACT(EPOCH FROM f.timestamp)::bigint::text as timestamp, f.flash_count,
-            ff.user_fid as farcaster_fid, ff.user_username as farcaster_username,
-            ff.user_pfp_url as farcaster_pfp_url, ff.cast_hash as farcaster_cast_hash,
-            fi.id as identification_id,
-            fi.matched_flash_id::text as identification_matched_flash_id,
-            fi.matched_flash_name as identification_matched_flash_name,
-            fi.similarity as identification_similarity,
-            fi.confidence as identification_confidence
-          FROM flashes f
-          LEFT JOIN flashcastr_flashes ff ON f.flash_id = ff.flash_id AND ff.deleted = false
-          LEFT JOIN flash_identifications fi ON f.ipfs_cid = fi.source_ipfs_cid
-          WHERE f.flash_id = $1
-        `;
-
-        const result = await pool.query(query, [args.flash_id]);
+        const result = await pool.query<UnifiedFlashRow>(`${UNIFIED_FLASH_SELECT} WHERE f.flash_id = $1`, [args.flash_id]);
         if (result.rows.length === 0) return null;
         return mapRow(result.rows[0]);
       },
 
       unifiedFlashes: async (_: unknown, args: { page?: number; limit?: number; city?: string; player?: string }) => {
-        const { page = 1, limit = 20 } = args;
-        const validatedPage = Math.max(1, page);
-        const offset = (validatedPage - 1) * limit;
+        const limit = clampLimit(args.limit, DEFAULT_LIMIT);
+        const where = new WhereBuilder().eqIgnoreCase("f.city", args.city).eqIgnoreCase("f.player", args.player);
+        const pagination = where.paginate(limit, pageOffset(args.page, limit));
 
-        let whereClause = "WHERE 1=1";
-        const params: unknown[] = [];
-        let paramIndex = 1;
-
-        if (args.city) {
-          whereClause += ` AND LOWER(f.city) = LOWER($${paramIndex++})`;
-          params.push(args.city);
-        }
-        if (args.player) {
-          whereClause += ` AND LOWER(f.player) = LOWER($${paramIndex++})`;
-          params.push(args.player);
-        }
-
-        params.push(limit, offset);
-
-        const query = `
-          SELECT
-            f.flash_id::text as flash_id, f.city, f.player, f.img, f.ipfs_cid,
-            f.text, EXTRACT(EPOCH FROM f.timestamp)::bigint::text as timestamp, f.flash_count,
-            ff.user_fid as farcaster_fid, ff.user_username as farcaster_username,
-            ff.user_pfp_url as farcaster_pfp_url, ff.cast_hash as farcaster_cast_hash,
-            fi.id as identification_id,
-            fi.matched_flash_id::text as identification_matched_flash_id,
-            fi.matched_flash_name as identification_matched_flash_name,
-            fi.similarity as identification_similarity,
-            fi.confidence as identification_confidence
-          FROM flashes f
-          LEFT JOIN flashcastr_flashes ff ON f.flash_id = ff.flash_id AND ff.deleted = false
-          LEFT JOIN flash_identifications fi ON f.ipfs_cid = fi.source_ipfs_cid
-          ${whereClause}
-          ORDER BY f.timestamp DESC
-          LIMIT $${paramIndex++} OFFSET $${paramIndex}
-        `;
-
-        const result = await pool.query(query, params);
+        const result = await pool.query<UnifiedFlashRow>(
+          `${UNIFIED_FLASH_SELECT} ${where.clause()} ORDER BY f.timestamp DESC ${pagination}`,
+          where.params
+        );
         return result.rows.map(mapRow);
       },
     },

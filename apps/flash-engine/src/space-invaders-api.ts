@@ -1,30 +1,25 @@
 import axios from "axios";
 import { ProxyRotator } from "@flashcastr/proxy";
 import { createLogger } from "@flashcastr/logger";
+import { withRetry } from "@flashcastr/resilience";
 
 const log = createLogger("flash-engine");
 
-interface FlashInvaderResponse {
+export interface FlashInvaderFlash {
+  flash_id: number;
+  img: string;
+  city: string;
+  text: string;
+  player: string;
+  timestamp: number;
+  flash_count: string;
+}
+
+export interface FlashInvaderResponse {
   flash_count: string;
   player_count: string;
-  with_paris: Array<{
-    flash_id: number;
-    img: string;
-    city: string;
-    text: string;
-    player: string;
-    timestamp: number;
-    flash_count: string;
-  }>;
-  without_paris: Array<{
-    flash_id: number;
-    img: string;
-    city: string;
-    text: string;
-    player: string;
-    timestamp: number;
-    flash_count: string;
-  }>;
+  with_paris: FlashInvaderFlash[];
+  without_paris: FlashInvaderFlash[];
 }
 
 const USER_AGENTS = [
@@ -42,21 +37,20 @@ const ACCEPT_LANGUAGES = [
   "en-US,en;q=0.9,es;q=0.8",
 ];
 
+const NEW_SESSION_WINDOW_MS = 60000;
+const FAILURES_BEFORE_SESSION_RESET = 5;
+
 function randomItem<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
 export default class SpaceInvadersAPI {
   private readonly API_URL = "https://api.space-invaders.com";
-  private lastRequestTime: number = 0;
-  private sessionStartTime: number = Date.now();
-  private requestCount: number = 0;
-  private consecutiveFailures: number = 0;
-  private proxyRotator: ProxyRotator;
-
-  constructor() {
-    this.proxyRotator = new ProxyRotator();
-  }
+  private lastRequestTime = 0;
+  private sessionStartTime = Date.now();
+  private requestCount = 0;
+  private consecutiveFailures = 0;
+  private readonly proxyRotator = new ProxyRotator();
 
   private getRandomHeaders(): Record<string, string> {
     const headers: Record<string, string> = {
@@ -74,33 +68,18 @@ export default class SpaceInvadersAPI {
 
   private async humanDelay(): Promise<void> {
     const now = Date.now();
-    const sessionAge = now - this.sessionStartTime;
-    const isNewSession = sessionAge < 60000;
+    const isNewSession = now - this.sessionStartTime < NEW_SESSION_WINDOW_MS;
 
     const minDelay = isNewSession ? 3000 : 1500;
     const maxDelay = isNewSession ? 8000 : 5000;
 
-    const timeSinceLastRequest = now - this.lastRequestTime;
-    if (timeSinceLastRequest < minDelay) {
+    if (now - this.lastRequestTime < minDelay) {
       const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
 
     this.lastRequestTime = Date.now();
     this.requestCount++;
-  }
-
-  private async retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        return await fn();
-      } catch (error) {
-        if (attempt === maxRetries) throw error;
-        const delay = Math.pow(1.5, attempt) * 1000 + Math.random() * 2000;
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-    }
-    throw new Error("Max retries exceeded");
   }
 
   /** Resolves with the API payload; rethrows after failure bookkeeping so callers can count errors. */
@@ -120,8 +99,9 @@ export default class SpaceInvadersAPI {
         validateStatus: (status) => status >= 200 && status < 300,
       });
 
-      const response = await this.retryWithBackoff(() =>
-        requestInstance.get<FlashInvaderResponse>("/flashinvaders/flashes/")
+      const response = await withRetry(
+        () => requestInstance.get<FlashInvaderResponse>("/flashinvaders/flashes/"),
+        { maxAttempts: 3, baseDelayMs: 1500, jitterMs: 2000 }
       );
 
       this.consecutiveFailures = 0;
@@ -131,7 +111,7 @@ export default class SpaceInvadersAPI {
       const message = error instanceof Error ? error.message : "Unknown error";
       log.warn(`Failed to fetch flashes (failures: ${this.consecutiveFailures}): ${message}`);
 
-      if (this.consecutiveFailures > 5) {
+      if (this.consecutiveFailures > FAILURES_BEFORE_SESSION_RESET) {
         this.sessionStartTime = Date.now();
         this.requestCount = 0;
         this.consecutiveFailures = 0;

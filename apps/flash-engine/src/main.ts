@@ -1,14 +1,15 @@
 import { config } from "dotenv";
 config();
 
-import cron from "node-cron";
+import { Cron } from "croner";
 import type { ConsumeMessage } from "amqplib";
-import { FlashcastrPublisher, FlashcastrConsumer, ROUTING_KEYS, QUEUES } from "@flashcastr/rabbitmq";
-import { createMetricsRegistry, startMetricsServer, Counter, Gauge } from "@flashcastr/metrics";
-import { createLogger, flushLogs } from "@flashcastr/logger";
-import { intEnv } from "@flashcastr/config";
+import { FlashcastrPublisher, FlashcastrConsumer, ROUTING_KEYS, QUEUES, observeQueueDepths } from "@flashcastr/rabbitmq";
+import { createMetricsRegistry, Counter, Gauge } from "@flashcastr/metrics";
+import { runService } from "@flashcastr/runtime";
+import { createLogger } from "@flashcastr/logger";
+import { intEnv, optionalEnv } from "@flashcastr/config";
 import type { FlashReceivedPayload, MessageEnvelope, UsersBroadcastPayload } from "@flashcastr/shared-types";
-import SpaceInvadersAPI from "./space-invaders-api.js";
+import SpaceInvadersAPI, { type FlashInvaderFlash } from "./space-invaders-api.js";
 
 const log = createLogger("flash-engine");
 const registry = createMetricsRegistry("flash-engine");
@@ -56,28 +57,32 @@ const usersRequestTotal = new Counter({
   registers: [registry],
 });
 
-// In-memory LRU cache for deduplication
-const recentFlashIds = new Set<number>();
 const MAX_CACHE_SIZE = 10000;
+const PEAK_START_HOUR = 6;
+const PEAK_END_HOUR = 23;
+const OFF_PEAK_SKIP_CHANCE = 0.5;
+const USERS_REFRESH_SCHEDULE = "*/30 * * * *";
+
+const recentFlashIds = new Set<number>();
 let lastFlashCountValue: string | null = null;
 let consecutiveNoChanges = 0;
-
-// Cached set of registered flashcastr usernames (lowercase for case-insensitive matching)
 let registeredPlayers = new Set<string>();
 
 const publisher = new FlashcastrPublisher("flash-engine");
 const api = new SpaceInvadersAPI();
 
-// Consumer for users.broadcast messages from database-engine
+async function requestUsers(reason: string): Promise<void> {
+  await publisher.publish(ROUTING_KEYS.USERS_REQUEST, {});
+  usersRequestTotal.inc();
+  log.info(`Published users.request (${reason})`);
+}
+
 class FlashEngineUsersConsumer extends FlashcastrConsumer<UsersBroadcastPayload> {
   constructor() {
     super("flash-engine", QUEUES.USERS_BROADCAST);
   }
 
-  protected async handleMessage(
-    envelope: MessageEnvelope<UsersBroadcastPayload>,
-    _raw: ConsumeMessage
-  ): Promise<void> {
+  protected async handleMessage(envelope: MessageEnvelope<UsersBroadcastPayload>, _raw: ConsumeMessage): Promise<void> {
     const { usernames } = envelope.payload;
     registeredPlayers = new Set(usernames);
     registeredPlayersGauge.set(registeredPlayers.size);
@@ -86,10 +91,7 @@ class FlashEngineUsersConsumer extends FlashcastrConsumer<UsersBroadcastPayload>
   }
 
   protected override onReconnect(): void {
-    publisher.publish(ROUTING_KEYS.USERS_REQUEST, {}).then(() => {
-      usersRequestTotal.inc();
-      log.info("Re-requested users after reconnect");
-    }).catch((err) => log.error("Failed to re-request users after reconnect:", err));
+    requestUsers("after reconnect").catch((err) => log.error("Failed to re-request users after reconnect:", err));
   }
 }
 
@@ -101,12 +103,50 @@ export function parisHour(now = new Date()): number {
 
 function isPeakFlashTime(): boolean {
   const hour = parisHour();
-  return hour >= 6 && hour < 23;
+  return hour >= PEAK_START_HOUR && hour < PEAK_END_HOUR;
+}
+
+function rememberFlash(flashId: number): void {
+  recentFlashIds.add(flashId);
+  if (recentFlashIds.size <= MAX_CACHE_SIZE) return;
+  const iterator = recentFlashIds.values();
+  for (let i = 0; i < MAX_CACHE_SIZE / 2; i++) {
+    recentFlashIds.delete(iterator.next().value!);
+  }
+}
+
+async function publishFlash(flash: FlashInvaderFlash): Promise<boolean> {
+  if (recentFlashIds.has(flash.flash_id)) return false;
+
+  const payload: FlashReceivedPayload = {
+    flash_id: flash.flash_id,
+    img: flash.img,
+    city: flash.city,
+    text: flash.text,
+    player: flash.player,
+    timestamp: flash.timestamp,
+    flash_count: flash.flash_count,
+  };
+
+  try {
+    await publisher.publish(ROUTING_KEYS.FLASH_RECEIVED, payload);
+    rememberFlash(flash.flash_id);
+    return true;
+  } catch (err) {
+    log.error(`Failed to publish flash ${flash.flash_id}:`, err);
+    return false;
+  }
+}
+
+function shouldSkipUnchanged(currentFlashCount: string): boolean {
+  if (lastFlashCountValue !== currentFlashCount) return false;
+  consecutiveNoChanges++;
+  const skipChance = Math.min(consecutiveNoChanges, 10) * 0.1;
+  return Math.random() < skipChance;
 }
 
 async function fetchAndPublish(): Promise<void> {
-  // Off-peak optimization: skip 50% of runs
-  if (!isPeakFlashTime() && Math.random() < 0.5) {
+  if (!isPeakFlashTime() && Math.random() < OFF_PEAK_SKIP_CHANCE) {
     log.debug("Skipping run during off-peak hours");
     return;
   }
@@ -121,22 +161,17 @@ async function fetchAndPublish(): Promise<void> {
     return;
   }
 
-  if (!flashes || (!flashes.with_paris.length && !flashes.without_paris.length)) {
+  if (!flashes.with_paris.length && !flashes.without_paris.length) {
     log.warn("No flashes returned from API");
     return;
   }
 
-  // Check if flash count changed
   const currentFlashCount = flashes.flash_count;
   if (currentFlashCount) lastFlashCount.set(parseInt(currentFlashCount, 10) || 0);
 
-  if (lastFlashCountValue === currentFlashCount) {
-    consecutiveNoChanges++;
-    const skipChance = Math.min(consecutiveNoChanges, 10) * 0.1;
-    if (Math.random() < skipChance) {
-      log.debug(`Backoff skip (${consecutiveNoChanges} consecutive unchanged)`);
-      return;
-    }
+  if (shouldSkipUnchanged(currentFlashCount)) {
+    log.debug(`Backoff skip (${consecutiveNoChanges} consecutive unchanged)`);
+    return;
   }
 
   log.info(`Flash count changed: ${lastFlashCountValue} → ${currentFlashCount}`);
@@ -146,51 +181,20 @@ async function fetchAndPublish(): Promise<void> {
   let publishCount = 0;
   let parisFilteredCount = 0;
 
-  async function processFlash(flash: { flash_id: number; img: string; city: string; text: string; player: string; timestamp: number; flash_count: string }) {
-    if (recentFlashIds.has(flash.flash_id)) return;
-
-    const payload: FlashReceivedPayload = {
-      flash_id: flash.flash_id,
-      img: flash.img,
-      city: flash.city,
-      text: flash.text,
-      player: flash.player,
-      timestamp: flash.timestamp,
-      flash_count: flash.flash_count,
-    };
-
-    try {
-      await publisher.publish(ROUTING_KEYS.FLASH_RECEIVED, payload);
-      publishCount++;
-
-      recentFlashIds.add(flash.flash_id);
-      if (recentFlashIds.size > MAX_CACHE_SIZE) {
-        const iterator = recentFlashIds.values();
-        for (let i = 0; i < MAX_CACHE_SIZE / 2; i++) {
-          recentFlashIds.delete(iterator.next().value!);
-        }
-      }
-    } catch (err) {
-      log.error(`Failed to publish flash ${flash.flash_id}:`, err);
-    }
-  }
-
-  // All non-Paris flashes pass through
   for (const flash of flashes.without_paris) {
-    await processFlash(flash);
+    if (await publishFlash(flash)) publishCount++;
   }
 
-  // Paris flashes only for registered users
   for (const flash of flashes.with_paris) {
     if (recentFlashIds.has(flash.flash_id)) continue;
 
     if (!registeredPlayers.has(flash.player.toLowerCase())) {
       parisFilteredCount++;
-      recentFlashIds.add(flash.flash_id);
+      rememberFlash(flash.flash_id);
       continue;
     }
 
-    await processFlash(flash);
+    if (await publishFlash(flash)) publishCount++;
   }
 
   if (parisFilteredCount > 0) {
@@ -204,49 +208,37 @@ async function fetchAndPublish(): Promise<void> {
   }
 }
 
-// Start
-const metricsPort = intEnv("METRICS_PORT", 9090);
-startMetricsServer(registry, metricsPort);
-
-// Start users consumer, THEN request users (consumer must be listening before the response arrives)
 const usersConsumer = new FlashEngineUsersConsumer();
-usersConsumer.startConsuming().then(async () => {
-  // Consumer is now registered — safe to request users
-  await publisher.publish(ROUTING_KEYS.USERS_REQUEST, {});
-  usersRequestTotal.inc();
-  log.info("Published users.request to database-engine");
-}).catch((err) => {
-  log.error("Failed to start users consumer or request users:", err);
-  process.exit(1);
+const schedule = optionalEnv("CRON_SCHEDULE", "*/5 * * * *");
+
+runService("flash-engine", {
+  registry,
+  metricsPort: intEnv("METRICS_PORT", 9090),
+  healthChecks: {
+    rabbitmq: () => ({ status: usersConsumer.isConsuming() ? "ok" : "error" }),
+    registeredPlayers: () => ({ status: registeredPlayers.size > 0 ? "ok" : "degraded", message: `${registeredPlayers.size} cached` }),
+  },
+  start: async (ctx) => {
+    ctx.onShutdown("publisher", () => publisher.close());
+    ctx.onShutdown("users-consumer", () => usersConsumer.close());
+
+    await usersConsumer.startConsuming();
+    await requestUsers("startup");
+    ctx.onShutdown("queue-depths", observeQueueDepths(registry, [usersConsumer]));
+
+    fetchAndPublish().catch((err) => log.error("Initial fetch failed:", err));
+
+    const fetchJob = new Cron(schedule, { protect: true }, () => {
+      fetchAndPublish().catch((err) => log.error("Scheduled fetch failed:", err));
+    });
+    const usersJob = new Cron(USERS_REFRESH_SCHEDULE, () => {
+      requestUsers("periodic refresh").catch((err) => log.error("Failed to publish periodic users.request:", err));
+    });
+    ctx.onShutdown("cron", () => {
+      fetchJob.stop();
+      usersJob.stop();
+    });
+
+    log.info(`flash-engine polling on schedule "${schedule}"`);
+  },
 });
-
-// Run immediately once (processes non-Paris flashes even without users)
-fetchAndPublish().catch((err) => log.error("Initial fetch failed:", err));
-
-// Schedule cron every 5 minutes
-const schedule = process.env.CRON_SCHEDULE || "*/5 * * * *";
-cron.schedule(schedule, () => {
-  fetchAndPublish().catch((err) => log.error("Scheduled fetch failed:", err));
-});
-
-// Re-request users every 30 minutes as a safety net against missed broadcasts
-cron.schedule("*/30 * * * *", () => {
-  publisher.publish(ROUTING_KEYS.USERS_REQUEST, {}).then(() => {
-    usersRequestTotal.inc();
-    log.info("Periodic users re-request published");
-  }).catch((err) => log.error("Failed to publish periodic users.request:", err));
-});
-
-log.info(`flash-engine started (schedule: ${schedule})`);
-
-// Graceful shutdown
-const shutdown = async (signal: string) => {
-  log.info(`Received ${signal}, shutting down...`);
-  await usersConsumer.close();
-  await publisher.close();
-  await flushLogs();
-  process.exit(0);
-};
-
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));

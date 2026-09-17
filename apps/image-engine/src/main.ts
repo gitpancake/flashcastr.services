@@ -3,9 +3,11 @@ config();
 
 import type { ConsumeMessage } from "amqplib";
 import axios from "axios";
-import { FlashcastrConsumer, FlashcastrPublisher, TransientError, QUEUES, ROUTING_KEYS } from "@flashcastr/rabbitmq";
-import { createMetricsRegistry, startMetricsServer, Counter, Gauge } from "@flashcastr/metrics";
-import { createLogger, flushLogs } from "@flashcastr/logger";
+import { FlashcastrConsumer, FlashcastrPublisher, TransientError, QUEUES, ROUTING_KEYS, observeQueueDepths } from "@flashcastr/rabbitmq";
+import { createMetricsRegistry, Counter, Gauge } from "@flashcastr/metrics";
+import { runService } from "@flashcastr/runtime";
+import { CircuitBreaker, CircuitBreakerOpenError, withRetry, type CircuitState } from "@flashcastr/resilience";
+import { createLogger } from "@flashcastr/logger";
 import { requireEnv, intEnv } from "@flashcastr/config";
 import { ProxyRotator } from "@flashcastr/proxy";
 import type { MessageEnvelope, FlashReceivedPayload, ImagePinnedPayload } from "@flashcastr/shared-types";
@@ -14,6 +16,13 @@ const log = createLogger("image-engine");
 const registry = createMetricsRegistry("image-engine");
 const PINATA_JWT = requireEnv("PINATA_JWT");
 const BASE_URL = "https://api.space-invaders.com";
+const PINATA_PIN_URL = "https://api.pinata.cloud/pinning/pinFileToIPFS";
+const PINATA_GATEWAY = "https://gateway.pinata.cloud/ipfs";
+
+const IPFS_FAILURE_THRESHOLD = 30;
+const IPFS_OPEN_DURATION_MS = 300000;
+const MAX_CIRCUIT_RETRY_WAIT_MS = 30000;
+const LOG_EVERY_N_FLASHES = 100;
 
 const imagesProcessed = new Counter({
   name: "image_engine_images_processed_total",
@@ -35,44 +44,39 @@ const ipfsFailures = new Counter({
 
 const circuitBreakerState = new Gauge({
   name: "image_engine_circuit_breaker_state",
-  help: "IPFS circuit breaker state (0=closed, 1=open)",
+  help: "IPFS circuit breaker state (0=closed, 1=open, 2=half-open)",
   registers: [registry],
 });
 
-// Rate limiter
-const requestsPerMinute = intEnv("CONSUMER_RATE_LIMIT", 250);
-let requestTimestamps: number[] = [];
+const CIRCUIT_GAUGE_VALUE: Record<CircuitState, number> = { closed: 0, open: 1, "half-open": 2 };
 
-async function waitForRateLimit(): Promise<void> {
-  const now = Date.now();
-  requestTimestamps = requestTimestamps.filter((t) => now - t < 60000);
-  if (requestTimestamps.length >= requestsPerMinute) {
-    const oldest = requestTimestamps[0];
-    const waitTime = 60000 - (now - oldest);
-    if (waitTime > 0) await new Promise((r) => setTimeout(r, waitTime));
+const ipfsBreaker = new CircuitBreaker({
+  failureThreshold: IPFS_FAILURE_THRESHOLD,
+  openDurationMs: IPFS_OPEN_DURATION_MS,
+  onStateChange: (state) => {
+    circuitBreakerState.set(CIRCUIT_GAUGE_VALUE[state]);
+    log.warn(`IPFS circuit breaker ${state}`);
+  },
+});
+
+class RateLimiter {
+  private timestamps: number[] = [];
+
+  constructor(private readonly perMinute: number) {}
+
+  async wait(): Promise<void> {
+    const now = Date.now();
+    this.timestamps = this.timestamps.filter((t) => now - t < 60000);
+    if (this.timestamps.length >= this.perMinute) {
+      const waitTime = 60000 - (now - this.timestamps[0]);
+      if (waitTime > 0) await new Promise((r) => setTimeout(r, waitTime));
+    }
+    this.timestamps.push(Date.now());
   }
-  requestTimestamps.push(Date.now());
 }
 
-// Circuit breaker
-let consecutiveIpfsFailures = 0;
-let circuitBreakerOpen = false;
-let circuitBreakerOpenUntil = 0;
-const MAX_IPFS_FAILURES = 30;
-const CIRCUIT_OPEN_MS = 300000;
-const MAX_CIRCUIT_RETRY_WAIT_MS = 30000;
+const rateLimiter = new RateLimiter(intEnv("CONSUMER_RATE_LIMIT", 250));
 
-function checkCircuitBreaker(): boolean {
-  if (circuitBreakerOpen && Date.now() > circuitBreakerOpenUntil) {
-    circuitBreakerOpen = false;
-    consecutiveIpfsFailures = 0;
-    circuitBreakerState.set(0);
-    log.info("IPFS circuit breaker reset");
-  }
-  return circuitBreakerOpen;
-}
-
-// User agents for image downloads
 const USER_AGENTS = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
@@ -91,23 +95,64 @@ function getRealisticHeaders(): Record<string, string> {
   };
 }
 
-async function retryRequest<T>(fn: () => Promise<T>, maxRetries = 3, baseDelay = 1000): Promise<T> {
-  let lastError: Error;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (error) {
-      lastError = error as Error;
-      if (attempt === maxRetries) throw lastError;
-      const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 1000;
-      await new Promise((r) => setTimeout(r, delay));
-    }
-  }
-  throw lastError!;
-}
-
 const publisher = new FlashcastrPublisher("image-engine");
 const proxyRotator = new ProxyRotator();
+
+interface DownloadedImage {
+  data: ArrayBuffer;
+  contentType: string;
+}
+
+async function downloadImage(imageUrl: string): Promise<DownloadedImage> {
+  const headers = getRealisticHeaders();
+  const { agent, proxy } = proxyRotator.createAgent(imageUrl);
+  const agentOption = agent ? (imageUrl.startsWith("https://") ? { httpsAgent: agent } : { httpAgent: agent }) : {};
+
+  try {
+    const response = await withRetry(
+      () => axios.get<ArrayBuffer>(imageUrl, {
+        responseType: "arraybuffer",
+        headers,
+        timeout: 30000,
+        maxRedirects: 5,
+        validateStatus: (status) => status < 400,
+        ...agentOption,
+      }),
+      { maxAttempts: 4, baseDelayMs: 1000, jitterMs: 1000 }
+    );
+    return { data: response.data, contentType: String(response.headers["content-type"] ?? "image/jpeg") };
+  } catch (error) {
+    if (proxy) proxyRotator.markFailed(proxy);
+    throw error;
+  }
+}
+
+async function pinOnce(image: DownloadedImage, filename: string): Promise<string> {
+  const file = new File([new Uint8Array(image.data)], filename, { type: image.contentType });
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("pinataMetadata", JSON.stringify({ name: filename }));
+
+  const response = await axios.post(PINATA_PIN_URL, formData, {
+    headers: { Authorization: `Bearer ${PINATA_JWT}`, "Content-Type": "multipart/form-data" },
+    timeout: 60000,
+    validateStatus: (status) => status < 500,
+  });
+
+  if (response.status === 429) throw new Error("Rate limited by Pinata API");
+  if (response.status >= 400) throw new Error(`Pinata API error: ${response.status}`);
+  return response.data.IpfsHash as string;
+}
+
+function pinToIpfs(image: DownloadedImage, filename: string): Promise<string> {
+  return ipfsBreaker.execute(() =>
+    withRetry(() => pinOnce(image, filename), { maxAttempts: 6, baseDelayMs: 10000, maxDelayMs: 200000, jitterMs: 1000 })
+  );
+}
+
+function circuitWait(retryAfterMs: number): number {
+  return Math.min(Math.max(retryAfterMs, 1000), MAX_CIRCUIT_RETRY_WAIT_MS);
+}
 
 class ImageEngineConsumer extends FlashcastrConsumer<FlashReceivedPayload> {
   constructor() {
@@ -120,127 +165,53 @@ class ImageEngineConsumer extends FlashcastrConsumer<FlashReceivedPayload> {
     return true;
   }
 
-  protected async handleMessage(
-    envelope: MessageEnvelope<FlashReceivedPayload>,
-    _raw: ConsumeMessage
-  ): Promise<void> {
+  protected async handleMessage(envelope: MessageEnvelope<FlashReceivedPayload>, _raw: ConsumeMessage): Promise<void> {
     const flash = envelope.payload;
-    const imageUrl = BASE_URL + flash.img;
 
-    if (checkCircuitBreaker()) {
-      const waitMs = Math.min(Math.max(circuitBreakerOpenUntil - Date.now(), 1000), MAX_CIRCUIT_RETRY_WAIT_MS);
-      throw new TransientError(`Circuit breaker open - deferring flash ${flash.flash_id}`, waitMs);
+    if (ipfsBreaker.state === "open") {
+      throw new TransientError(`Circuit breaker open - deferring flash ${flash.flash_id}`, circuitWait(ipfsBreaker.retryAfterMs()));
     }
 
-    await waitForRateLimit();
+    await rateLimiter.wait();
 
-    // Download image
-    const headers = getRealisticHeaders();
-    const { agent, proxy } = proxyRotator.createAgent(imageUrl);
-
-    let response;
-    try {
-      response = await retryRequest(async () => {
-        return await axios.get(imageUrl, {
-          responseType: "arraybuffer",
-          headers,
-          timeout: 30000,
-          maxRedirects: 5,
-          validateStatus: (status) => status < 400,
-          ...(agent ? (imageUrl.startsWith("https://") ? { httpsAgent: agent } : { httpAgent: agent }) : {}),
-        });
-      });
-    } catch (error) {
-      if (proxy) proxyRotator.markFailed(proxy);
-      throw error;
-    }
-
-    // Upload to IPFS via Pinata
+    const image = await downloadImage(BASE_URL + flash.img);
     const filename = flash.img.split("/").pop() || `image_${flash.flash_id}.jpg`;
-    const contentType = String(response.headers["content-type"] ?? "image/jpeg");
 
     let cid: string;
     try {
-      cid = await retryRequest(async () => {
-        const file = new File([response.data], filename, { type: contentType });
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("pinataMetadata", JSON.stringify({ name: filename }));
-
-        const pinataResponse = await axios.post(
-          "https://api.pinata.cloud/pinning/pinFileToIPFS",
-          formData,
-          {
-            headers: {
-              Authorization: `Bearer ${PINATA_JWT}`,
-              "Content-Type": "multipart/form-data",
-            },
-            timeout: 60000,
-            validateStatus: (status) => status < 500,
-          }
-        );
-
-        if (pinataResponse.status === 429) {
-          throw new Error("Rate limited by Pinata API");
-        }
-        if (pinataResponse.status >= 400) {
-          throw new Error(`Pinata API error: ${pinataResponse.status}`);
-        }
-
-        return pinataResponse.data.IpfsHash;
-      }, 5, 10000);
-
+      cid = await pinToIpfs(image, filename);
       ipfsUploads.inc();
-      consecutiveIpfsFailures = 0;
     } catch (error) {
-      ipfsFailures.inc();
-      consecutiveIpfsFailures++;
-
-      if (consecutiveIpfsFailures >= MAX_IPFS_FAILURES) {
-        circuitBreakerOpen = true;
-        circuitBreakerState.set(1);
-        circuitBreakerOpenUntil = Date.now() + CIRCUIT_OPEN_MS;
-        log.error(`Circuit breaker OPEN for 5 minutes (${consecutiveIpfsFailures} failures)`);
+      if (error instanceof CircuitBreakerOpenError) {
+        throw new TransientError(`Circuit breaker open - deferring flash ${flash.flash_id}`, circuitWait(error.retryAfterMs));
       }
-
+      ipfsFailures.inc();
       throw error;
     }
 
-    // Publish IMAGE_PINNED
-    const payload: ImagePinnedPayload = {
-      ...flash,
-      ipfs_cid: cid,
-      ipfs_url: `https://gateway.pinata.cloud/ipfs/${cid}`,
-    };
-
+    const payload: ImagePinnedPayload = { ...flash, ipfs_cid: cid, ipfs_url: `${PINATA_GATEWAY}/${cid}` };
     await publisher.publish(ROUTING_KEYS.IMAGE_PINNED, payload, envelope.correlationId);
     imagesProcessed.inc();
 
-    if (flash.flash_id % 100 === 0) {
+    if (flash.flash_id % LOG_EVERY_N_FLASHES === 0) {
       log.info(`Pinned flash ${flash.flash_id}: ${cid}`);
     }
   }
 }
 
-// Start
-const metricsPort = intEnv("METRICS_PORT", 9093);
-startMetricsServer(registry, metricsPort);
-
 const consumer = new ImageEngineConsumer();
-consumer.startConsuming().catch((err) => {
-  log.error("Failed to start consumer:", err);
-  process.exit(1);
+
+runService("image-engine", {
+  registry,
+  metricsPort: intEnv("METRICS_PORT", 9093),
+  healthChecks: {
+    rabbitmq: () => ({ status: consumer.isConsuming() ? "ok" : "error" }),
+    ipfs: () => ({ status: ipfsBreaker.state === "closed" ? "ok" : "degraded", message: `circuit ${ipfsBreaker.state}` }),
+  },
+  start: async (ctx) => {
+    ctx.onShutdown("publisher", () => publisher.close());
+    ctx.onShutdown("consumer", () => consumer.close());
+    await consumer.startConsuming();
+    ctx.onShutdown("queue-depths", observeQueueDepths(registry, [consumer]));
+  },
 });
-
-log.info("image-engine started");
-
-const shutdown = async (signal: string) => {
-  log.info(`Received ${signal}, shutting down...`);
-  await consumer.close();
-  await publisher.close();
-  await flushLogs();
-  process.exit(0);
-};
-
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));

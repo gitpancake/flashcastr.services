@@ -1,5 +1,6 @@
 import { createServer } from "http";
 import { Registry, Counter, Gauge, Histogram, collectDefaultMetrics } from "prom-client";
+import { evaluateHealth, healthStatusCode, type HealthCheck } from "@flashcastr/health";
 
 export function createMetricsRegistry(serviceName: string): Registry {
   const registry = new Registry();
@@ -8,18 +9,30 @@ export function createMetricsRegistry(serviceName: string): Registry {
   return registry;
 }
 
-export function startMetricsServer(registry: Registry, port: number): void {
+/**
+ * Serves /metrics and /health. With no checks /health always reports ok,
+ * as before; with checks it returns 503 when any check reports "error".
+ */
+export function startMetricsServer(registry: Registry, port: number, healthChecks: Record<string, HealthCheck> = {}): void {
+  const startTime = Date.now();
+
   const server = createServer(async (req, res) => {
     if (req.url === "/metrics") {
       res.setHeader("Content-Type", registry.contentType);
       res.end(await registry.metrics());
-    } else if (req.url === "/health") {
-      res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ status: "ok", timestamp: Date.now() }));
-    } else {
-      res.statusCode = 404;
-      res.end("Not Found");
+      return;
     }
+
+    if (req.url === "/health") {
+      const health = await evaluateHealth(healthChecks, startTime);
+      res.setHeader("Content-Type", "application/json");
+      res.statusCode = healthStatusCode(health.status);
+      res.end(JSON.stringify({ ...health, timestamp: Date.now() }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end("Not Found");
   });
 
   server.listen(port, () => {

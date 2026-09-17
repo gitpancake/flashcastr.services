@@ -2,10 +2,11 @@ import { config } from "dotenv";
 config();
 
 import type { ConsumeMessage } from "amqplib";
-import { FlashcastrConsumer, FlashcastrPublisher, QUEUES, ROUTING_KEYS } from "@flashcastr/rabbitmq";
+import { FlashcastrConsumer, FlashcastrPublisher, QUEUES, ROUTING_KEYS, observeQueueDepths } from "@flashcastr/rabbitmq";
 import { getPool, PostgresFlashesDb, FlashcastrUsersDb, closePool } from "@flashcastr/database";
-import { createMetricsRegistry, startMetricsServer, Counter, Gauge } from "@flashcastr/metrics";
-import { createLogger, flushLogs } from "@flashcastr/logger";
+import { createMetricsRegistry, Counter, Gauge } from "@flashcastr/metrics";
+import { runService } from "@flashcastr/runtime";
+import { createLogger } from "@flashcastr/logger";
 import { intEnv } from "@flashcastr/config";
 import type { MessageEnvelope, ImagePinnedPayload, FlashStoredPayload, Flash, UsersBroadcastPayload } from "@flashcastr/shared-types";
 
@@ -196,34 +197,32 @@ class UsersRequestConsumer extends FlashcastrConsumer<Record<string, never>> {
   }
 }
 
-const metricsPort = intEnv("METRICS_PORT", 9090);
-startMetricsServer(registry, metricsPort);
-
 const consumer = new DatabaseEngineConsumer();
-consumer.startConsuming().catch((err) => {
-  log.error("Failed to start consumer:", err);
-  process.exit(1);
-});
-
 const usersRequestConsumer = new UsersRequestConsumer();
-usersRequestConsumer.startConsuming().catch((err) => {
-  log.error("Failed to start users request consumer:", err);
+
+runService("database-engine", {
+  registry,
+  metricsPort: intEnv("METRICS_PORT", 9090),
+  healthChecks: {
+    rabbitmq: () => ({ status: consumer.isConsuming() ? "ok" : "error" }),
+    postgres: async () => {
+      await pool.query("SELECT 1");
+      return { status: "ok" };
+    },
+  },
+  start: async (ctx) => {
+    ctx.onShutdown("postgres", () => closePool());
+    ctx.onShutdown("publisher", () => publisher.close());
+    ctx.onShutdown("users-request-consumer", () => usersRequestConsumer.close());
+    ctx.onShutdown("consumer", async () => {
+      await consumer.flush();
+      await consumer.close();
+    });
+
+    await consumer.startConsuming();
+    usersRequestConsumer.startConsuming().catch((err) => log.error("Failed to start users request consumer:", err));
+    ctx.onShutdown("queue-depths", observeQueueDepths(registry, [consumer, usersRequestConsumer]));
+
+    broadcastUsers().catch((err) => log.error("Initial users broadcast failed:", err));
+  },
 });
-
-broadcastUsers().catch((err) => log.error("Initial users broadcast failed:", err));
-
-log.info("database-engine started");
-
-const shutdown = async (signal: string) => {
-  log.info(`Received ${signal}, shutting down...`);
-  await consumer.flush();
-  await consumer.close();
-  await usersRequestConsumer.close();
-  await publisher.close();
-  await closePool();
-  await flushLogs();
-  process.exit(0);
-};
-
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));

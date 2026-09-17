@@ -4,11 +4,12 @@ config();
 import type { ConsumeMessage } from "amqplib";
 import { NeynarAPIClient } from "@neynar/nodejs-sdk";
 import type { PostCastReqBodyEmbeds } from "@neynar/nodejs-sdk/build/api/index.js";
-import { FlashcastrConsumer, FlashcastrPublisher, QUEUES, ROUTING_KEYS } from "@flashcastr/rabbitmq";
+import { FlashcastrConsumer, FlashcastrPublisher, QUEUES, ROUTING_KEYS, observeQueueDepths } from "@flashcastr/rabbitmq";
 import { getPool, FlashcastrFlashesDb, FlashcastrUsersDb, closePool, type FailedCastRow } from "@flashcastr/database";
 import { decrypt } from "@flashcastr/crypto";
-import { createMetricsRegistry, startMetricsServer, Counter } from "@flashcastr/metrics";
-import { createLogger, flushLogs } from "@flashcastr/logger";
+import { createMetricsRegistry, Counter } from "@flashcastr/metrics";
+import { runService } from "@flashcastr/runtime";
+import { createLogger } from "@flashcastr/logger";
 import { requireEnv, intEnv } from "@flashcastr/config";
 import type { AxiosError } from "axios";
 import type {
@@ -247,35 +248,31 @@ async function checkSignerStatuses(): Promise<void> {
   }
 }
 
-// Start
-const metricsPort = intEnv("METRICS_PORT", 9090);
-startMetricsServer(registry, metricsPort);
+const consumer = new NeynarEngineConsumer();
+const retryInterval = intEnv("RETRY_INTERVAL_MS", 300000);
 
-// Run signer check before starting consumer
-checkSignerStatuses().then(() => {
-  const consumer = new NeynarEngineConsumer();
-  consumer.startConsuming().catch((err) => {
-    log.error("Failed to start consumer:", err);
-    process.exit(1);
-  });
+runService("neynar-engine", {
+  registry,
+  metricsPort: intEnv("METRICS_PORT", 9090),
+  healthChecks: {
+    rabbitmq: () => ({ status: consumer.isConsuming() ? "ok" : "error" }),
+    postgres: async () => {
+      await pool.query("SELECT 1");
+      return { status: "ok" };
+    },
+  },
+  start: async (ctx) => {
+    ctx.onShutdown("postgres", () => closePool());
+    ctx.onShutdown("publisher", () => publisher.close());
+    ctx.onShutdown("consumer", () => consumer.close());
 
-  // Start retry worker
-  const retryInterval = intEnv("RETRY_INTERVAL_MS", 300000); // 5 minutes
-  setInterval(() => {
-    retryFailedCasts().catch((err) => log.error("Retry interval error:", err));
-  }, retryInterval);
+    await checkSignerStatuses();
+    await consumer.startConsuming();
+    ctx.onShutdown("queue-depths", observeQueueDepths(registry, [consumer]));
 
-  log.info("neynar-engine started");
-
-  const shutdown = async (signal: string) => {
-    log.info(`Received ${signal}, shutting down...`);
-    await consumer.close();
-    await publisher.close();
-    await closePool();
-    await flushLogs();
-    process.exit(0);
-  };
-
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+    const retryTimer = setInterval(() => {
+      retryFailedCasts().catch((err) => log.error("Retry interval error:", err));
+    }, retryInterval);
+    ctx.onShutdown("retry-worker", () => clearInterval(retryTimer));
+  },
 });

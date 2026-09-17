@@ -95,6 +95,10 @@ export abstract class FlashcastrConsumer<T = unknown> {
   /** Override to run logic after a successful reconnect (e.g. re-fetch cached state). */
   protected onReconnect(): void {}
 
+  get queueName(): string {
+    return this.queue;
+  }
+
   isConsuming(): boolean {
     return this.channel !== null && this.consumerTag !== null;
   }

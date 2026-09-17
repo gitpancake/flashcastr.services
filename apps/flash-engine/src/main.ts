@@ -70,12 +70,20 @@ const api = new SpaceInvadersAPI();
 const pool = getPool();
 const usersDb = new FlashcastrUsersDb(pool);
 
+let registeredPlayersRefresh: Promise<void> | null = null;
+
 async function refreshRegisteredPlayers(): Promise<void> {
-  registeredPlayers = await loadRegisteredPlayers(usersDb);
-  registeredPlayersLoadedAt = Date.now();
-  registeredPlayersGauge.set(registeredPlayers.size);
-  usersRefreshedTotal.inc();
-  log.info(`Refreshed registered players: ${registeredPlayers.size} from Postgres`);
+  if (registeredPlayersRefresh) return registeredPlayersRefresh;
+  registeredPlayersRefresh = (async () => {
+    registeredPlayers = await loadRegisteredPlayers(usersDb);
+    registeredPlayersLoadedAt = Date.now();
+    registeredPlayersGauge.set(registeredPlayers.size);
+    usersRefreshedTotal.inc();
+    log.info(`Refreshed registered players: ${registeredPlayers.size} from Postgres`);
+  })().finally(() => {
+    registeredPlayersRefresh = null;
+  });
+  return registeredPlayersRefresh;
 }
 
 const PARIS_HOUR_FORMAT = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Paris", hour: "numeric", hourCycle: "h23" });
@@ -212,7 +220,7 @@ runService("flash-engine", {
   registry,
   metricsPort: intEnv("METRICS_PORT", 9090),
   healthChecks: {
-    rabbitmq: () => ({ status: publisher.isConnected() ? "ok" : "error" }),
+    rabbitmq: () => ({ status: publisher.isConnected() ? "ok" : "degraded" }),
     registeredPlayers: registeredPlayersHealth,
   },
   start: async (ctx) => {

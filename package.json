@@ -9,10 +9,10 @@
   "private": true,
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
-    "@apollo/server": "^4.11.3",
+    "@apollo/server": "^5.5.1",
+    "@as-integrations/express4": "^1.1.2",
     "@farcaster/core": "^0.18.10",
     "@farcaster/hub-nodejs": "^0.15.10",
-    "@google-cloud/pubsub": "^5.3.0",
     "@graphql-tools/schema": "^10.0.14",
     "@hono/node-server": "^2.1.1",
     "@langchain/core": "^1.2.11",
@@ -20,12 +20,12 @@
     "@langchain/langgraph-checkpoint-postgres": "^1.0.5",
     "@langchain/openai": "^1.5.13",
     "@neynar/nodejs-sdk": "^3.137.2",
-    "@opentelemetry/auto-instrumentations-node": "^0.56.0",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.57.2",
-    "@opentelemetry/resources": "^1.30.1",
-    "@opentelemetry/sdk-node": "^0.57.2",
-    "@opentelemetry/semantic-conventions": "^1.30.0",
-    "amqplib": "^0.10.8",
+    "@opentelemetry/auto-instrumentations-node": "^0.80.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
+    "@opentelemetry/resources": "^2.11.0",
+    "@opentelemetry/sdk-node": "^0.222.0",
+    "@opentelemetry/semantic-conventions": "1.43",
+    "amqplib": "^2.0.1",
     "axios": "^1.10.0",
     "cors": "^2.8.5",
     "croner": "^10.0.1",
@@ -33,7 +33,7 @@
     "drizzle-orm": "^0.45.1",
     "express": "^4.21.2",
     "graphql": "^16.10.0",
-    "graphql-ws": "^5.16.0",
+    "graphql-ws": "^6.2.2",
     "hono": "^4.13.8",
     "http-proxy-agent": "^7.0.2",
     "https-proxy-agent": "^7.0.6",
@@ -50,9 +50,6 @@
   },
   "devDependencies": {
     "@nx/js": "22.6.2",
-    "@types/uuid": "^10.0.0",
-    "drizzle-kit": "^0.31.10",
-    "vitest": "^4.1.0",
     "@swc-node/register": "1.11.1",
     "@swc/cli": "~0.8.0",
     "@swc/core": "1.15.8",
@@ -60,17 +57,23 @@
     "@types/amqplib": "^0.10.7",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
-    "@types/node": "20.19.9",
+    "@types/node": "^22.20.3",
     "@types/node-cron": "^3.0.11",
     "@types/pg": "^8.15.5",
+    "@types/uuid": "^10.0.0",
     "@types/ws": "^8.5.14",
+    "drizzle-kit": "^0.31.10",
     "nx": "22.5.1",
     "prettier": "^2.6.2",
     "tslib": "^2.3.0",
-    "typescript": "~5.9.2"
+    "typescript": "~5.9.2",
+    "vitest": "^4.1.0"
   },
   "workspaces": [
     "apps/*",
     "libs/*"
-  ]
+  ],
+  "engines": {
+    "node": ">=22"
+  }
 }

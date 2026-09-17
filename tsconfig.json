@@ -6,5 +6,5 @@
     "libs/*/src/**/*.ts",
     "scripts/**/*.ts"
   ],
-  "exclude": ["node_modules", "dist", "apps/agent-flashcastr", "libs/shared"]
+  "exclude": ["node_modules", "dist"]
 }

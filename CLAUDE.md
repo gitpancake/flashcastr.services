@@ -85,7 +85,7 @@ All queues have DLQ via `x-dead-letter-exchange: flashcastr.dlx` and `x-max-leng
 
 ### Deployment
 
-- **Railway:** flash-engine, database-engine, neynar-engine, api, agent-invaders — auto-deploy on push to main with watch paths (agent-invaders: `apps/agent-invaders/railway.json`, Dockerfile path + watch patterns)
+- **Railway:** flash-engine, database-engine, neynar-engine, api, agent-invaders — auto-deploy on push to main with watch paths (agent-invaders: Dockerfile path, `/health` and watch patterns are set in the Railway service settings; `railway.json` is deprecated by Railway)
 - **Digital Ocean:** image-engine — GitHub Action at `.github/workflows/deploy-image-engine.yml`
 - **Dockerfiles:** each service has its own at `apps/<service>/Dockerfile` (multi-stage, node:20-slim)
 - **Infrastructure:** Existing Railway project has Postgres + RabbitMQ already running

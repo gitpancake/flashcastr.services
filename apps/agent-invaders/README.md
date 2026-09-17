@@ -58,7 +58,7 @@ curl -X POST https://<host>/admin/digest -H "Authorization: Bearer $ADMIN_TOKEN"
 
 ## Deploy on Railway
 
-1. In the existing flashcastr Railway project, create service `agent-invaders` from the GitHub repo with root directory `/` and config file `apps/agent-invaders/railway.json` (Dockerfile path, watch patterns, `/health`).
+1. In the existing flashcastr Railway project, create service `agent-invaders` from the GitHub repo with root directory `/`, Dockerfile path `apps/agent-invaders/Dockerfile` (also `RAILWAY_DOCKERFILE_PATH`), health check `/health`, watch patterns `apps/agent-invaders/**`, `libs/**`, `package.json`, `package-lock.json`, `tsconfig.base.json`. Railway has deprecated `railway.json`, so these live in the service settings.
 2. Set `DATABASE_URL` to the project's Postgres reference (`${{Postgres.DATABASE_URL}}`). Schemas `langgraph`, `langgraph_store` and tables `action_log`, `inbound_casts` are created on boot.
 3. Set the variables from `.env.example`. `FARCASTER_SIGNER_PRIVATE_KEY` is the Ed25519 signer key registered on-chain for `FARCASTER_FID`; boot fails if the hub does not list it.
 4. Create a Neynar webhook for `cast.created` filtered on `mentioned_fids` and `parent_author_fids` = the account fid, pointing at `https://<host>/webhooks/neynar`, and put its secret in `NEYNAR_WEBHOOK_SECRET`. Without it the poller alone handles mentions.

@@ -1,0 +1,16 @@
+{
+  "name": "@flashcastr/agent-invaders",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/main.ts",
+  "scripts": {
+    "dev": "npx tsx --watch src/main.ts",
+    "start": "npx tsx src/main.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "digest": "npx tsx src/cli.ts digest",
+    "status": "npx tsx src/cli.ts status",
+    "news": "npx tsx src/cli.ts news"
+  }
+}

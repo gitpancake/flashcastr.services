@@ -1,0 +1,301 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta http-equiv='Content-Type' content='text/html; charset=utf-8' />
+<meta name='description' content='Pr&eacute;sentation des mosa&iuml;ques Space Invaders diss&eacute;min&eacute;es dans le monde' />
+<meta name='keywords' content='space, invader, space invaders, mosa&iuml;ques, mosaics, street, art' />
+<meta http-equiv='Content-Language' content='fr-CA' />
+<link rel='stylesheet' href='css/styles.css'/>
+<link rel='icon' type='image/png' href='/nav/favicon.png' />
+<title>Chasse aux Space Invaders</title>
+
+<link rel='stylesheet' href='css/chocolat.css'/>
+
+<script type='text/javascript'>
+function liend(date) {
+	document.getElementById('date').value=date;
+	document.formd.submit();
+}
+function lienm(ville, numero) {
+	document.getElementById('ville').name=ville;
+	document.getElementById('numero').value=numero;
+	document.formm.submit();
+}
+function lienv(ville, arron) {
+	document.getElementById('ville').value=ville;
+	document.getElementById('arron').value=arron;
+	document.formv.submit();
+}
+</script>
+<script type='text/javascript' src='js/jquery.js'></script>
+<script type='text/javascript' src='js/jquery.chocolat.js'></script>
+<script type='text/javascript' src='js/ajax.js'></script>
+<script type='text/javascript'>
+function requete(callback, mosaique) {
+	var xhr = getXMLHttpRequest();
+	xhr.onreadystatechange = function() {
+		if (xhr.readyState == 4 && (xhr.status == 200 || xhr.status == 0)) {
+			callback(xhr.responseText);
+		}
+	}
+	abonne = '';
+	abonne = abonne.replace('&', 'mesperm');
+	chaineradio = 'galerie'+mosaique;
+	tabradio = document.getElementsByName(chaineradio);
+	valgal ='';
+	for (i=0; i<tabradio.length; i++) {
+		if (tabradio[i].checked) {
+			valgal=tabradio[i].value;
+		}
+	}
+	xhr.open('GET', 'ajaxmodifgal.php?abonne='+abonne+'&mosaique='+mosaique+'&galerie='+valgal, true);
+	xhr.send(null);
+}
+function readData(retour) {
+	var etat = retour.substring(0,2);
+	var quoi = retour.substring(2);
+	var id = 'info'+quoi;
+	document.getElementById(id).innerHTML = '<img src="nav/'+etat+'.png">';
+	setTimeout(function(){
+		document.getElementById(id).innerHTML = '';
+	}, 1500);
+}
+function supprimer(callback, message) {
+	var xhr = getXMLHttpRequest();
+	xhr.onreadystatechange = function() {
+		if (xhr.readyState == 4 && (xhr.status == 200 || xhr.status == 0)) {
+			callback(xhr.responseText, message);
+		}
+	}
+	xhr.open('GET', 'ajaxsupmessage.php?message='+message, true);
+	xhr.send(null);
+}
+function lireData(retour, mess) {
+	if (retour == 'ok') {
+		document.getElementById('mess'+mess).style.display='none';
+	}
+}
+function survola(quoiqui, comment) {
+	var sourca=document.getElementById('croix'+quoiqui).src;
+	if (comment == 'over') {
+		sourca=sourca.replace('plein', 'hover');
+	}
+	else {
+		sourca=sourca.replace('hover', 'plein');
+	}
+	document.getElementById('croix'+quoiqui).src=sourca;
+}
+function vision(quiquoi) {
+	var source=document.getElementById('croix'+quiquoi).src;
+	if (document.getElementById('ajoutform'+quiquoi).style.display == 'none') {
+		document.getElementById('ajoutform'+quiquoi).style.display = 'block';
+		source=source.replace('croix', 'moins');
+	}
+	else {
+		document.getElementById('ajoutform'+quiquoi).style.display = 'none';
+		source=source.replace('moins', 'croix');
+	}
+	document.getElementById('croix'+quiquoi).src = source;
+}
+function decompte(combien) {
+	var nbrcaracteres = 500 - combien.value.length;
+	var complement = combien.id.substring(7);
+	document.getElementById('decompte'+complement).innerHTML = nbrcaracteres;
+}
+function changepage(quellepage) {
+	document.commentaire.page.value=quellepage;
+	document.commentaire.submit();
+}
+function changearron(quelarron) {
+	document.commentaire.arron.value=quelarron;
+	document.commentaire.page.value=1;
+	document.commentaire.submit();
+}
+function surligne (champ, erreur) {
+    if (erreur) champ.style.backgroundColor = '#fba';
+    else champ.style.backgroundColor = '';
+}
+function verifTexte (champ) {
+    if (champ.value.length < 10 || champ.value.length > 500) {
+	surligne (champ, true);
+	alert ('Le message doit comprendre entre 10 et 500 caracteres');
+	return false;
+    } else {
+	surligne (champ, false);
+	return true;
+    }
+}
+function verification (f) {
+    var texteOK = verifTexte (f.message);
+    if (texteOK) return true;
+    else {
+	return false;
+    }
+}
+</script>
+
+</head>
+<body>
+
+<div id='entete'>
+ <div class='logo'><a class='nt' href='stats.php'><img src='/nav/logo.png' alt='Invader Spotter'/></a></div>
+ <div class='langage'><a href='changelang.php?lang=en'><img src='/nav/flag_en.png' alt='en' title='en'/></a><img src='/nav/flag_fract.png' alt='fr' title='fr'/></div>
+ <div id='menu'>
+  <ul id='menuderoulant'>
+	<li><a href='home.php'>Accueil</a></li>
+	<li><a href='news.php'>News</a></li>
+	<li><a href='articles.php'>Articles</a></li>
+	<li><a href='#'>Les mosa&iuml;ques</a>
+		<ul>
+			<li><a href='villes.php'>Par villes</a></li>
+			<li><a href='cherche.php'>Recherche</a></li>
+	        <li><a href='dates.php'>Par date</a></li>
+		</ul></li>
+	<li><a href='liens.php'>Liens</a></li>
+	<li><a href='contact.php'>Contact</a>
+	</li><li class='pseudo'><a href='inscription.php'>Inscription/Connexion</a>
+
+	</li>
+  </ul>
+ </div>
+</div>
+<div id='main'>
+<div id='contenu'>
+<br/><br/>
+<p class='normal'>2 mosa&iuml;ques correspondant aux crit&egrave;res s&eacute;lectionn&eacute;s sur les 4432 pr&eacute;sentes dans la base :</p>
+
+<form id='formv' name='formv' method='POST' action='listing.php'>
+<input type='hidden' name='ville' id='ville'/>
+<input type='hidden' name='arron' id='arron'/>
+</form>
+<form name='commentaire' method='post' action='listing.php' onsubmit='return verification(this)'>
+<br/><br/><input type='hidden' name='PA01' value='on'/><input type='hidden' name='PA02' value='on'/><input type='hidden' name='PA03' value='on'/><input type='hidden' name='PA04' value='on'/><input type='hidden' name='PA05' value='on'/><input type='hidden' name='PA06' value='on'/><input type='hidden' name='PA07' value='on'/><input type='hidden' name='PA08' value='on'/><input type='hidden' name='PA09' value='on'/><input type='hidden' name='PA10' value='on'/><input type='hidden' name='PA11' value='on'/><input type='hidden' name='PA12' value='on'/><input type='hidden' name='PA13' value='on'/><input type='hidden' name='PA14' value='on'/><input type='hidden' name='PA15' value='on'/><input type='hidden' name='PA16' value='on'/><input type='hidden' name='PA17' value='on'/><input type='hidden' name='PA18' value='on'/><input type='hidden' name='PA19' value='on'/><input type='hidden' name='PA20' value='on'/><input type='hidden' name='PA77' value='on'/><input type='hidden' name='PA92' value='on'/><input type='hidden' name='PA93' value='on'/><input type='hidden' name='PA94' value='on'/><input type='hidden' name='PA95' value='on'/><input type='hidden' name='numero' value='4; 12'/><input type='hidden' name='ok' value='on'/><input type='hidden' name='peudegrade' value='on'/><input type='hidden' name='degrade' value='on'/><input type='hidden' name='tresdegrade' value='on'/><input type='hidden' name='detruit' value='on'/><input type='hidden' name='nonvisible' value='on'/><input type='hidden' name='inconnu' value='on'/><input type='hidden' name='10pts' value='on'/><input type='hidden' name='20pts' value='on'/><input type='hidden' name='30pts' value='on'/><input type='hidden' name='40pts' value='on'/><input type='hidden' name='50pts' value='on'/><input type='hidden' name='100pts' value='on'/><input type='hidden' name='inconnupts' value='on'/><input type='hidden' name='page' value='1'/><input type='hidden' name='arron' value='00'/>
+<table border=0 cellpadding=0 cellspacing=4>
+<tr class="haut">
+<td align="left" rowspan="2" width="300"><img src="grosplan/PA/PA_0004-grosplan.png" title="---" width="100"><br/><font class="normal"><b>PA_04 [10 pts]</b><br/>Date de pose : 15/03/1998<br/>(<a href='javascript:lienv("PA","05");'>Paris - 5&egrave;me arrondissement</a>)<br/>Dernier &eacute;tat connu : <img src='nav/spot_invader_degraded.png' class='banniere' width=25> D&eacute;grad&eacute;<br/>Date et source : mai 2022<br/>Instagram: <a href='https://www.instagram.com/explore/tags/pa_04/' target='_blank'>hashtag #PA_04</a></font></td>
+<td width=300 align=left><div id='image0'><a class='chocolat-image' href='photos/PA/PA_0004-janvier2016.jpg' title='PA_0004-janvier2016'><img src='images/PA/PA_0004-janvier2016.jpg' width=300 class='imagelien'></a></div></td>
+<td width=300 align=left><div id='image1'><a class='chocolat-image' href='photos/PA/PA_0004-fevrier2023.jpg' title='PA_0004-fevrier2023'><img src='images/PA/PA_0004-fevrier2023.jpg' width=300 class='imagelien'></a></div></td>
+</tr>
+<tr>
+<td align=left valign=top><font class='legende'>photo janvier 2016</font></td><td align=left valign=top><font class='legende'>photo février 2023 (@bp78)</font></td>
+</tr>
+<tr class='bas'>
+<td>&nbsp;</td>
+<td align=left colspan=2><font class='normal'></font><img id='croix0' src='nav/boutton_croix_plein.png' onMouseOver='survola("0", "over")' onMouseOut='survola("0", "out")' onClick='vision("0")'> <font color='#FF0000'><b>!</b></font><br/>
+<div id='ajoutform0' style='display:none;'>
+<div id='mess1155'><p><b><u>GH0STY SPACE</u></b> (06/08/2018) :<br/>je l'ai :)<br/></p><img src='nav/ligne.png'></div><div id='mess1715'><p><b><u>Space Yaël </u></b> (21/11/2018) :<br/>Un peu d&eacute;grad&eacute; mais flashable <br /><br />photo si besoin<br/></p><img src='nav/ligne.png'></div><div id='mess3561'><p><b><u>Forstars</u></b> (19/08/2019) :<br/>Il a du &ecirc;tre reconstruit puisqu'il est tout neuf ! <br/></p><img src='nav/ligne.png'></div><div id='mess5707'><p><b><u>suricate_saki</u></b> (14/02/2020) :<br/>Toujours vivant !<br/></p><img src='nav/ligne.png'></div><div id='mess7086'><p><b><u>Frederetienne</u></b> (06/06/2020) :<br/>Exact, ab&icirc;m&eacute;, mais flash&eacute; aujourd'hui sans probl&egrave;me<br/></p><img src='nav/ligne.png'></div><div id='mess7464'><p><b><u>Flash_in_the_city </u></b> (28/06/2020) :<br/>Flash&eacute; facilement le 28/06 !<br/></p><img src='nav/ligne.png'></div><div id='mess9452'><p><b><u>Sardinemarteau</u></b> (22/12/2020) :<br/>Flash&eacute; aujourd'hui<br/></p><img src='nav/ligne.png'></div><div id='mess10077'><p><b><u>Laurent92974</u></b> (19/03/2021) :<br/>D&eacute;grad&eacute;, mais stable et flashable sans probl&egrave;me le 19/03/2021<br/></p><img src='nav/ligne.png'></div><div id='mess11085'><p><b><u>JetBlack75</u></b> (17/09/2021) :<br/>Flash&eacute; hier<br/></p><img src='nav/ligne.png'></div><div id='mess12916'><p><b><u>VinceXPC</u></b> (27/02/2022) :<br/>Flash&eacute; le 26/02/2022<br/></p><img src='nav/ligne.png'></div><div id='mess15242'><p><b><u>Goldorak75</u></b> (04/12/2022) :<br/>Flash&eacute; 03/12/2022<br/></p><img src='nav/ligne.png'></div><div id='mess18869'><p><b><u>Mondatosphere</u></b> (28/05/2023) :<br/>Un grand ancien. Abim&eacute; mais flash&eacute; du premier coup.<br/></p><img src='nav/ligne.png'></div><div id='mess19398'><p><b><u>BipBip !</u></b> (26/06/2023) :<br/>ok le 25/05/23<br/></p><img src='nav/ligne.png'></div><div id='mess22476'><p><b><u>TILICHOU</u></b> (15/01/2024) :<br/>C'est tout bon flash&eacute;<br/></p><img src='nav/ligne.png'></div><div id='mess24299'><p><b><u>Legsfr</u></b> (30/03/2024) :<br/>flash&eacute; le 30/03/2024<br/></p><img src='nav/ligne.png'></div><div id='mess27412'><p><b><u>Astrostellar</u></b> (04/07/2024) :<br/>Flash&eacute; le 30/06/24<br/></p><img src='nav/ligne.png'></div><div id='mess32950'><p><b><u>ak</u></b> (14/01/2025) :<br/>14/01/25 : je suis partie &agrave; sa recherche pour le flasher et enfaite il n&rsquo;existe plus !<br/></p><img src='nav/ligne.png'></div><div id='mess33070'><p><b><u>Anermione</u></b> (25/01/2025) :<br/>Flash&eacute; le 21/01/2025<br/></p><img src='nav/ligne.png'></div><div id='mess40042'><p><b><u>Forgeron71</u></b> (07/07/2026) :<br/>Flash&eacute; le 07/07/2026. Un peu ab&icirc;m&eacute; mais toujours vaillant !<br/></p><img src='nav/ligne.png'></div><p>Pour &eacute;crire un message vous devez &ecirc;tre <a href='inscription.php'>connect&eacute;</a></p></div><br/>
+</td>
+</tr><tr class="haut">
+<td align="left" rowspan="2" width="300"><img src="grosplan/PA/PA_0012-grosplan.png" title="---" width="100"><br/><font class="normal"><b>PA_12 [10 pts]</b><br/>Date de pose : 10/04/1998<br/>(<a href='javascript:lienv("PA","11");'>Paris - 11&egrave;me arrondissement</a>)<br/>Dernier &eacute;tat connu : <img src='nav/spot_invader_ok.png' class='banniere' width=25> OK<br/>Date et source : décembre 2024<br/>Instagram: <a href='https://www.instagram.com/explore/tags/pa_12/' target='_blank'>hashtag #PA_12</a></font></td>
+<td width=300 align=left><div id='image2'><a class='chocolat-image' href='photos/PA/PA_0012-decembre2024.jpg' title='PA_0012-decembre2024'><img src='images/PA/PA_0012-decembre2024.jpg' width=300 class='imagelien'></a></div></td>
+<td width=300 align=left><img src='images/PA/PA_0012-archive.jpg' width=300></td>
+</tr>
+<tr>
+<td align=left valign=top><font class='legende'>photo décembre 2024 (@NewSpotter)</font></td><td align=left valign=top><font class='legende'>photo d'archive (<a href='http://www.space-invaders.com/' target='blank'>@Invader</a>) - configuration d'origine</font></td>
+</tr>
+<tr class='bas'>
+<td>&nbsp;</td>
+<td align=left colspan=2><font class='normal'></font><img id='croix1' src='nav/boutton_croix_plein.png' onMouseOver='survola("1", "over")' onMouseOut='survola("1", "out")' onClick='vision("1")'> <font color='#FF0000'><b>!</b></font><br/>
+<div id='ajoutform1' style='display:none;'>
+<div id='mess31947'><p><b><u>]=-- Maxime --=[</u></b> (01/12/2024) :<br/>Flash&eacute; ce jour. Longue vie et merci :-)<br/></p><img src='nav/ligne.png'></div><div id='mess31972'><p><b><u>Frankyyy007</u></b> (01/12/2024) :<br/>L'un des nombreux SI r&eacute;activ&eacute; dans le cadre de la "Block Party" o&ugrave; une cagnotte cons&eacute;quente avait &eacute;t&eacute; rassembl&eacute;e, un grand merci aux r&eacute;activateurs !<br />
+PA_12 faisait partie des mosa&iuml;ques &agrave; n'avoir jamais pu &ecirc;tre flash&eacute;e depuis 2014 !<br/></p><img src='nav/ligne.png'></div><div id='mess32016'><p><b><u>nashtags</u></b> (01/12/2024) :<br/>Flash&eacute; today. Merci aux r&eacute;activateurs !<br/></p><img src='nav/ligne.png'></div><div id='mess32044'><p><b><u>Mondatosphere</u></b> (02/12/2024) :<br/>Flash&eacute; cet apr&egrave;s-midi. Merci et longue vie &agrave; lui. <br/></p><img src='nav/ligne.png'></div><div id='mess32055'><p><b><u>Legsfr</u></b> (02/12/2024) :<br/>flash&eacute; le 01/12/2024<br/></p><img src='nav/ligne.png'></div><div id='mess32084'><p><b><u>Vianney</u></b> (03/12/2024) :<br/>Flash&eacute; le 01/12/2024, merci aux r&eacute;activateurs<br/></p><img src='nav/ligne.png'></div><div id='mess32121'><p><b><u>Goldorak75</u></b> (07/12/2024) :<br/>Flash&eacute; le 07/12/2024, merci aux r&eacute;activateurs.<br/></p><img src='nav/ligne.png'></div><div id='mess32888'><p><b><u>rimrim</u></b> (13/01/2025) :<br/>Toujours vivant : flash&eacute; le 11/01/2025 !<br/></p><img src='nav/ligne.png'></div><div id='mess33668'><p><b><u>clyde</u></b> (28/02/2025) :<br/>Flash&eacute; aujourd'hui<br/></p><img src='nav/ligne.png'></div><div id='mess37235'><p><b><u>mrjo94</u></b> (18/08/2025) :<br/>Flash&eacute; ce jour!<br/></p><img src='nav/ligne.png'></div><div id='mess37743'><p><b><u>Bouh</u></b> (12/10/2025) :<br/>Flash&eacute; avec son copain. <br/></p><img src='nav/ligne.png'></div><div id='mess38635'><p><b><u>Happyflo</u></b> (05/02/2026) :<br/>Flash&eacute; r&eacute;cemment <br/></p><img src='nav/ligne.png'></div><p>Pour &eacute;crire un message vous devez &ecirc;tre <a href='inscription.php'>connect&eacute;</a></p></div><br/>
+</td>
+</tr></table>
+</form>
+<script>
+$(function(){
+	$('#image0').Chocolat({
+	imageSize: 'contain'
+	});
+});
+</script>
+
+<script>
+$(function(){
+	$('#image1').Chocolat({
+	imageSize: 'contain'
+	});
+});
+</script>
+
+<script>
+$(function(){
+	$('#image2').Chocolat({
+	imageSize: 'contain'
+	});
+});
+</script>
+
+</div>
+</div>
+<div id='footer'>
+</div>
+
+<script>
+    $(function(){
+	var instance = $('#container3').Chocolat({
+	    setTitle : 'set title',
+	    loop: true,
+	    images : [
+		{src : 'demo-images/1.jpg', title : 'caption 1'},
+		{src : 'demo-images/6.jpg', title : 'caption 2'},
+		{src : 'demo-images/8.jpg', title : 'caption 3'},
+	    ],
+	    imageSize : 'contain',
+	    container : '#container3'
+	}).data('chocolat');
+	$('.api-open').on('click', function(e) {
+	    e.preventDefault()
+	    console.log('open start');
+	    var def = instance.api().open()
+	    def.done(function(){
+		console.log('open done');
+	    })
+	})
+	$('.api-close').on('click', function(e) {
+	    e.preventDefault()
+	    console.log('close start');
+	    var def = instance.api().close()
+	    def.done(function(){
+		console.log('close done');
+	    })
+	})
+	$('.api-prev').on('click', function(e) {
+	    e.preventDefault()
+	    console.log('prev start');
+	    var def = instance.api().prev()
+	    def.done(function(){
+		console.log('prev done');
+	    })
+	})
+	$('.api-next').on('click', function(e) {
+	    e.preventDefault()
+	    console.log('next start');
+	    var def = instance.api().next()
+	    def.done(function(){
+		console.log('next done');
+	    })
+	})
+	$('.api-cover').on('click', function(e) {
+	    e.preventDefault()
+	    console.log('cover mode start')
+	    instance.api().set('imageSize', 'cover')
+	    var def = instance.api().place()
+	    def.done(function(){
+		console.log('cover mode done')
+	    })
+	})
+	$('.api-contain').on('click', function(e) {
+	    e.preventDefault()
+	    console.log('contain mode start')
+	    instance.api().set('imageSize', 'contain')
+	    var def = instance.api().place()
+	    def.done(function(){
+		console.log('contain mode done')
+	    })
+	})
+    });
+</script>
+</body>
+</html>

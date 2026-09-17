@@ -1,0 +1,86 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta http-equiv='Content-Type' content='text/html; charset=utf-8' />
+<meta name='description' content='Pr&eacute;sentation des mosa&iuml;ques Space Invaders diss&eacute;min&eacute;es dans le monde' />
+<meta name='keywords' content='space, invader, space invaders, mosa&iuml;ques, mosaics, street, art' />
+<meta http-equiv='Content-Language' content='fr-CA' />
+<link rel='stylesheet' href='css/styles.css'/>
+<link rel='icon' type='image/png' href='/nav/favicon.png' />
+<title>Chasse aux Space Invaders</title>
+
+<script type='text/javascript'>
+function survola(quoiqui, comment) {
+	var sourca=document.getElementById('croix'+quoiqui).src;
+	if (comment == 'over') {
+		sourca=sourca.replace('plein', 'hover');
+	}
+	else {
+		sourca=sourca.replace('hover', 'plein');
+	}
+	document.getElementById('croix'+quoiqui).src=sourca;
+}
+
+function vision(quiquoi) {
+	var source=document.getElementById('croix'+quiquoi).src;
+	if (document.getElementById('mois'+quiquoi).style.display == 'none') {
+		document.getElementById('mois'+quiquoi).style.display = 'block';
+		source=source.replace('croix', 'moins');
+	}
+	else {
+		document.getElementById('mois'+quiquoi).style.display = 'none';
+		source=source.replace('moins', 'croix');
+	}
+	document.getElementById('croix'+quiquoi).src = source;
+}
+
+function lienm(ville, numero) {
+    document.getElementById('ville').name=ville;
+    document.getElementById('numero').value=numero;
+    document.formm.submit();
+}
+</script>
+
+</head>
+<body>
+<p class='soustitre'>Les news :</p>
+
+<img id='croix202609' src='nav/boutton_moins_plein.png' onMouseOver='survola("202609", "over")' onMouseOut='survola("202609", "out")' onClick='vision("202609")'/>&nbsp;&nbsp;<font class='soustitre'>septembre 2026</font><br/>
+<div id='mois202609'>
+<p class='news'><b>15 :</b> Destruction de <a href='javascript:lienm("STK",13);' class='ko'>STK_13</a></p>
+<p class='news'><b>13 :</b> Destruction de <a href='javascript:lienm("NY",173);' class='ko'>NY_173</a></p>
+<p class='news'><b>12 :</b> Ajout des SI manquants (déjà détruits) de l&apos;invasion de Stockholm: 
+<a href='javascript:lienm("STK",11);' class='ko'>STK_11</a>, <a href='javascript:lienm("STK",12);' class='ko'>STK_12</a> et <a href='javascript:lienm("STK",15);' class='ko'>STK_15</a></p>
+<p class='news'><b>11 :</b> Ajout de 16 SI de l'invasion de Stockholm: 
+<a href='javascript:lienm("STK",1);' class='ok'>STK_01</a>, <a href='javascript:lienm("STK",2);' class='ok'>STK_02</a>,
+<a href='javascript:lienm("STK",3);' class='ok'>STK_03</a>, <a href='javascript:lienm("STK",4);' class='ok'>STK_04</a>,
+<a href='javascript:lienm("STK",5);' class='ok'>STK_05</a>, <a href='javascript:lienm("STK",6);' class='ok'>STK_06</a>,
+</p><p class='news'>
+<a href='javascript:lienm("STK",7);' class='ok'>STK_07</a>, <a href='javascript:lienm("STK",8);' class='ok'>STK_08</a>, 
+<a href='javascript:lienm("STK",9);' class='ok'>STK_09</a>, <a href='javascript:lienm("STK",10);' class='ok'>STK_10</a>,
+<a href='javascript:lienm("STK",13);' class='ok'>STK_13</a>, <a href='javascript:lienm("STK",14);' class='ok'>STK_14</a>,
+<a href='javascript:lienm("STK",16);' class='ok'>STK_16</a>, <a href='javascript:lienm("STK",17);' class='ok'>STK_17</a>,
+<a href='javascript:lienm("STK",18);' class='ok'>STK_18</a> et <a href='javascript:lienm("STK",19);' class='ok'>STK_19</a></p>
+<p class='news'><b>10 :</b> Mise &agrave; jour du statut de <a href='javascript:lienm("PA08",845);' class='nt'>PA_845</a></p>
+<p class='news'><b>06 :</b> Destruction de <a href='javascript:lienm("PA19",1288);' class='ko'>PA_1288</a></p>
+<p class='news'><b>01 :</b> R&eacute;activation de <a href='javascript:lienm("PA12",1346);' class='ok'>PA_1346</a>. D&eacute;gradation de <a href='javascript:lienm("BAB",13);' class='ko'>BAB_13</a></p></div><br/>
+<img id='croix202608' src='nav/boutton_moins_plein.png' onMouseOver='survola("202608", "over")' onMouseOut='survola("202608", "out")' onClick='vision("202608")'/>&nbsp;&nbsp;<font class='soustitre'>ao&ucirc;t 2026</font><br/>
+<div id='mois202608'>
+<p class='news'><b>31 :</b> R&eacute;activation de <a href='javascript:lienm("PA12",242);' class='ok'>PA_242</a></p>
+<p class='news'><b>29 :</b> Restauration de <a href='javascript:lienm("PA20",1099);' class='ok'>PA_1099</a></p>
+<p class='news'><b>28 :</b> D&eacute;gradation de <a href='javascript:lienm("PA02",296);' class='dg'>PA_296</a></p>
+<p class='news'><b>24 :</b> D&eacute;gradation de <a href='javascript:lienm("WN",11);' class='dg'>WN_11</a>. Destruction de <a href='javascript:lienm("NY",29);' class='ko'>NY_29</a></p>
+<p class='news'><b>20 :</b> Destruction de <a href='javascript:lienm("BTA",27);' class='ko'>BTA_27</a></p>
+<p class='news'><b>19 :</b> Destruction de <a href='javascript:lienm("PA11",683);' class='ko'>PA_683</a></p>
+<p class='news'><b>18 :</b> D&eacute;gradation de <a href='javascript:lienm("PA20",431);' class='dg'>PA_431</a></p>
+<p class='news'><b>15 :</b> Destruction de <a href='javascript:lienm("TK",28);' class='ko'>TK_28</a></p>
+<p class='news'><b>14 :</b> Restauration de <a href='javascript:lienm("BAB",54);' class='ok'>BAB_54</a></p>
+<p class='news'><b>12 :</b> R&eacute;activation de <a href='javascript:lienm("PA04",572);' class='ok'>PA_572</a></p>
+<p class='news'><b>10 :</b> D&eacute;gradation de <a href='javascript:lienm("FTBL",16);' class='dg'>FTBL_16</a>. Destruction de <a href='javascript:lienm("HK",54);' class='ko'>HK_54</a></p>
+<p class='news'><b>07 :</b> D&eacute;gradation de <a href='javascript:lienm("TK",127);' class='dg'>TK_127</a></p>
+<p class='news'><b>06 :</b> D&eacute;gradation de <a href='javascript:lienm("LSN",8);' class='dg'>LSN_08</a></p>
+<p class='news'><b>05 :</b> Destruction de <a href='javascript:lienm("LDN",91);' class='ko'>LDN_91</a></p>
+<p class='news'><b>02 :</b> D&eacute;gradation de <a href='javascript:lienm("BGK",11);' class='ko'>BGK_11</a></p></div><br/>
+
+</body></html>

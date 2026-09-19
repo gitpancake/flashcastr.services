@@ -90,7 +90,7 @@ export function createLogger(serviceName: string, destination?: pino.Destination
         },
       },
     },
-    destination ?? loki?.stream
+    destination ?? (loki ? pino.multistream([{ stream: process.stdout }, { stream: loki.stream }]) : undefined)
   );
 
   function log(level: LogLevel, args: unknown[]) {

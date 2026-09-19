@@ -21,6 +21,32 @@ jobs:
           username: ${{ secrets.DROPLET_USER }}
           key: ${{ secrets.DROPLET_SSH_KEY }}
           script: |
+            set -euo pipefail
+
+            current_node_major() {
+              node -v 2>/dev/null | sed -nE 's/^v([0-9]+).*/\1/p'
+            }
+
+            NODE_MAJOR=$(current_node_major)
+            if [ -z "$NODE_MAJOR" ] || [ "$NODE_MAJOR" -lt 22 ]; then
+              if ! sudo -n true 2>/dev/null; then
+                echo "ERROR: Node < 22 and passwordless sudo is unavailable; cannot upgrade non-interactively. Aborting." >&2
+                exit 1
+              fi
+              curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -n -E bash -
+              DEBIAN_FRONTEND=noninteractive sudo -n apt-get install -y nodejs
+              pm2 update
+
+              NODE_MAJOR=$(current_node_major)
+              if [ -z "$NODE_MAJOR" ] || [ "$NODE_MAJOR" -lt 22 ]; then
+                echo "ERROR: Node upgrade attempted but version is still < 22 ($(node -v 2>/dev/null || echo 'unknown'))." >&2
+                exit 1
+              fi
+            fi
+
+            echo "node: $(node -v)"
+            echo "npm: $(npm -v)"
+
             cd /opt/image-engine-app
             git pull origin main
             npm ci

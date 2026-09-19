@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConsumeMessage } from "amqplib";
+import { Registry } from "prom-client";
 
 const amqp = vi.hoisted(() => {
   const channel = {
@@ -38,7 +39,7 @@ class TestConsumer extends FlashcastrConsumer<Payload> {
   handler = vi.fn<(envelope: MessageEnvelope<Payload>, raw: ConsumeMessage) => Promise<void>>(async () => undefined);
   retryable = true;
 
-  constructor(options: { manualAck?: boolean; maxAttempts?: number } = {}) {
+  constructor(options: { manualAck?: boolean; maxAttempts?: number; registry?: Registry } = {}) {
     super("test", "test.queue", {
       rabbitUrl: "amqp://test",
       maxAttempts: 3,
@@ -264,5 +265,55 @@ describe("FlashcastrConsumer", () => {
     expect(amqp.channel.bindQueue).toHaveBeenCalledWith("amq.gen-test", "flashcastr.events", "flash.casted");
     expect(amqp.channel.consume).toHaveBeenCalledWith("amq.gen-test", expect.any(Function), { noAck: false });
     expect(consumer.queueName).toBe("amq.gen-test");
+  });
+
+  it("records a processed metric on ack when a registry is provided", async () => {
+    const registry = new Registry();
+    const consumer = new TestConsumer({ registry });
+    await start(consumer);
+
+    const raw = message(envelope(1));
+    deliver(raw);
+    await settle();
+
+    const json = await registry.getMetricsAsJSON();
+    const processed = json.find((entry) => entry.name === "flashcastr_consumer_messages_processed_total") as
+      | { values: { labels: Record<string, string>; value: number }[] }
+      | undefined;
+    expect(processed?.values.find((v) => v.labels.service === "test")?.value).toBe(1);
+  });
+
+  it("records dead-lettered and requeued metrics for their respective outcomes", async () => {
+    const registry = new Registry();
+    const consumer = new TestConsumer({ registry, maxAttempts: 2 });
+    consumer.handler.mockRejectedValue(new Error("flaky"));
+    await start(consumer);
+
+    const first = message(envelope(1));
+    deliver(first);
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+
+    const second = message(envelope(1));
+    deliver(second);
+    await settle();
+
+    const json = await registry.getMetricsAsJSON();
+    const metric = (name: string) =>
+      (json.find((entry) => entry.name === name) as { values: { labels: Record<string, string>; value: number }[] } | undefined)
+        ?.values.find((v) => v.labels.service === "test")?.value;
+
+    expect(metric("flashcastr_consumer_messages_requeued_total")).toBe(1);
+    expect(metric("flashcastr_consumer_messages_deadlettered_total")).toBe(1);
+  });
+
+  it("does not attach metrics when no registry is provided", async () => {
+    const consumer = new TestConsumer();
+    await start(consumer);
+
+    const raw = message(envelope(1));
+    expect(() => {
+      deliver(raw);
+    }).not.toThrow();
   });
 });

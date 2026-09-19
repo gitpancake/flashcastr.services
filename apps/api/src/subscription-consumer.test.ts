@@ -26,6 +26,7 @@ const amqp = vi.hoisted(() => {
 vi.mock("amqplib", () => ({ connect: amqp.connect }));
 
 import { SubscriptionConsumer } from "./subscription-consumer.js";
+import { InMemoryPubSub } from "./pubsub.js";
 
 async function start(consumer: SubscriptionConsumer): Promise<void> {
   amqp.channel.consume.mockImplementation(async () => ({ consumerTag: "tag-1" }));
@@ -49,7 +50,7 @@ afterEach(() => {
 
 describe("SubscriptionConsumer", () => {
   it("binds a server-named exclusive queue to flash.stored and flash.casted instead of a durable api.subscriptions queue", async () => {
-    const consumer = new SubscriptionConsumer("amqp://test");
+    const consumer = new SubscriptionConsumer("amqp://test", new InMemoryPubSub());
     await start(consumer);
 
     expect(amqp.channel.assertQueue).toHaveBeenCalledWith("", { exclusive: true, autoDelete: true });

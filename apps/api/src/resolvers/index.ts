@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import type { PubSubEngine } from "../pubsub.js";
 import { createUserResolvers } from "./users.js";
 import { createFlashResolvers } from "./flashes.js";
 import { createCityResolvers } from "./cities.js";
@@ -8,7 +9,7 @@ import { createFlashIdentificationResolvers } from "./flash-identifications.js";
 import { createUnifiedFlashResolvers } from "./unified-flash.js";
 import { createSubscriptionResolvers } from "./subscriptions.js";
 
-export function createResolvers(pool: Pool) {
+export function createResolvers(pool: Pool, pubsub: PubSubEngine) {
   const modules = [
     createUserResolvers(pool),
     createFlashResolvers(pool),
@@ -17,7 +18,7 @@ export function createResolvers(pool: Pool) {
     createProgressResolvers(pool),
     createFlashIdentificationResolvers(pool),
     createUnifiedFlashResolvers(pool),
-    createSubscriptionResolvers(),
+    createSubscriptionResolvers(pubsub),
   ];
 
   const resolvers: Record<string, Record<string, unknown>> = {};

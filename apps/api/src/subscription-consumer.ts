@@ -1,7 +1,8 @@
 import type { ConsumeMessage } from "amqplib";
 import { FlashcastrConsumer, QUEUES, ROUTING_KEYS } from "@flashcastr/rabbitmq";
 import type { FlashStoredPayload, FlashCastedPayload, MessageEnvelope } from "@flashcastr/shared-types";
-import { publish, TOPICS } from "./pubsub.js";
+import type { PubSubEngine } from "./pubsub.js";
+import { TOPICS } from "./pubsub.js";
 
 const SUBSCRIPTION_PREFETCH = 10;
 
@@ -11,7 +12,10 @@ const SUBSCRIPTION_PREFETCH = 10;
  * FlashcastrConsumer; unknown event types are acked and ignored.
  */
 export class SubscriptionConsumer extends FlashcastrConsumer<unknown> {
-  constructor(rabbitUrl: string) {
+  constructor(
+    rabbitUrl: string,
+    private readonly pubsub: PubSubEngine
+  ) {
     super("api", QUEUES.API_SUBSCRIPTIONS, {
       rabbitUrl,
       prefetch: SUBSCRIPTION_PREFETCH,
@@ -22,7 +26,7 @@ export class SubscriptionConsumer extends FlashcastrConsumer<unknown> {
   protected async handleMessage(envelope: MessageEnvelope<unknown>, _raw: ConsumeMessage): Promise<void> {
     if (envelope.type === ROUTING_KEYS.FLASH_STORED) {
       const payload = envelope.payload as FlashStoredPayload;
-      publish(TOPICS.FLASH_STORED, {
+      this.pubsub.publish(TOPICS.FLASH_STORED, {
         flash_id: String(payload.flash_id),
         city: payload.city,
         player: payload.player,
@@ -35,7 +39,7 @@ export class SubscriptionConsumer extends FlashcastrConsumer<unknown> {
 
     if (envelope.type === ROUTING_KEYS.FLASH_CASTED) {
       const payload = envelope.payload as FlashCastedPayload;
-      publish(TOPICS.FLASH_CASTED, {
+      this.pubsub.publish(TOPICS.FLASH_CASTED, {
         flash_id: String(payload.flash_id),
         city: payload.city,
         player: payload.player,

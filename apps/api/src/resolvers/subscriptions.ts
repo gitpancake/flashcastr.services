@@ -1,14 +1,15 @@
-import { subscribe, TOPICS } from "../pubsub.js";
+import type { PubSubEngine } from "../pubsub.js";
+import { TOPICS } from "../pubsub.js";
 
-export function createSubscriptionResolvers() {
+export function createSubscriptionResolvers(pubsub: PubSubEngine) {
   return {
     Subscription: {
       flashStored: {
-        subscribe: () => subscribe(TOPICS.FLASH_STORED),
+        subscribe: () => pubsub.subscribe(TOPICS.FLASH_STORED),
         resolve: (payload: unknown) => payload,
       },
       flashCasted: {
-        subscribe: () => subscribe(TOPICS.FLASH_CASTED),
+        subscribe: () => pubsub.subscribe(TOPICS.FLASH_CASTED),
         resolve: (payload: unknown) => payload,
       },
     },

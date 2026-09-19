@@ -4,5 +4,5 @@ export interface RecentFlashIdsSource {
 
 export async function loadRecentFlashIds(flashesDb: RecentFlashIdsSource, limit: number): Promise<Set<number>> {
   const ids = await flashesDb.getRecentFlashIds(limit);
-  return new Set(ids);
+  return new Set([...ids].reverse());
 }

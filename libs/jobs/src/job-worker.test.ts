@@ -1,5 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClaimedFlashJob, FlashJobsDb } from "@flashcastr/database";
+
+const logger = vi.hoisted(() => ({
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+  flush: vi.fn(async () => undefined),
+}));
+vi.mock("@flashcastr/logger", () => ({ createLogger: () => logger }));
+
 import { JobWorker } from "./job-worker.js";
 import { FatalMessageError, TransientError } from "./errors.js";
 
@@ -239,7 +249,7 @@ describe("JobWorker", () => {
   });
 
   it("survives settleFailure rejecting: logs and keeps the loop claiming on the next tick", async () => {
-    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    logger.error.mockClear();
     const claim = vi.fn(async () => [] as ClaimedFlashJob[]);
     claim.mockResolvedValueOnce([claimedJob()]);
     const fail = vi.fn(async () => {
@@ -262,7 +272,7 @@ describe("JobWorker", () => {
     await settle();
 
     expect(fail).toHaveBeenCalledTimes(1);
-    expect(consoleErrorSpy).toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalled();
 
     // The loop iteration completed despite settleFailure rejecting: it looped
     // back around to an empty claim, then idled. The next poll tick claims
@@ -272,7 +282,6 @@ describe("JobWorker", () => {
     expect(claim.mock.calls.length).toBeGreaterThan(claimsAfterSettleFailure);
 
     await worker.close();
-    consoleErrorSpy.mockRestore();
   });
 
   it("start() is a no-op when already running: a second call doesn't spawn a duplicate batch of loops", async () => {

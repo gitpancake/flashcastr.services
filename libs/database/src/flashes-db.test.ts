@@ -172,3 +172,82 @@ describe("PostgresFlashesDb.writeMany", () => {
     expect(ipfsCids).toEqual(["bafy123"]);
   });
 });
+
+class FakeInsertNewPool {
+  calls: Array<{ sql: string; params: unknown[] }> = [];
+  returningRows: Array<{ flash_id: number }> = [];
+
+  async query(sql: string, params: unknown[] = []) {
+    this.calls.push({ sql, params });
+    return { rows: this.returningRows };
+  }
+}
+
+describe("PostgresFlashesDb.insertNew", () => {
+  it("issues no query for an empty batch and returns an empty array", async () => {
+    const pool = new FakePool();
+    const db = new PostgresFlashesDb(pool as unknown as Pool);
+    const client = new FakeInsertNewPool();
+
+    const inserted = await db.insertNew(client as unknown as Pool, []);
+
+    expect(inserted).toEqual([]);
+    expect(client.calls).toHaveLength(0);
+  });
+
+  it("inserts with ipfs_cid forced to a literal NULL and ON CONFLICT DO NOTHING RETURNING flash_id", async () => {
+    const pool = new FakePool();
+    const db = new PostgresFlashesDb(pool as unknown as Pool);
+    const client = new FakeInsertNewPool();
+    client.returningRows = [{ flash_id: 111 }];
+
+    await db.insertNew(client as unknown as Pool, [makeFlash({ flash_id: 111 })]);
+
+    expect(client.calls).toHaveLength(1);
+    const { sql } = client.calls[0];
+    expect(sql).toMatch(/INSERT INTO flashes/);
+    expect(sql).toMatch(/ON CONFLICT \(flash_id\) DO NOTHING/);
+    expect(sql).toMatch(/RETURNING flash_id/);
+    expect(sql).toMatch(/SELECT[^F]*NULL[^F]*AS ipfs_cid/s);
+  });
+
+  it("maps RETURNING rows to the newly inserted flash_id array", async () => {
+    const pool = new FakePool();
+    const db = new PostgresFlashesDb(pool as unknown as Pool);
+    const client = new FakeInsertNewPool();
+    client.returningRows = [{ flash_id: 111 }];
+
+    const inserted = await db.insertNew(client as unknown as Pool, [makeFlash({ flash_id: 111 })]);
+
+    expect(inserted).toEqual([111]);
+  });
+
+  it("converts unix-seconds timestamps to Date objects in the query params", async () => {
+    const pool = new FakePool();
+    const db = new PostgresFlashesDb(pool as unknown as Pool);
+    const client = new FakeInsertNewPool();
+
+    await db.insertNew(client as unknown as Pool, [makeFlash({ flash_id: 111, timestamp: 1_700_000_000 })]);
+
+    const timestampsParam = client.calls[0].params.find(
+      (p): p is Date[] => Array.isArray(p) && p[0] instanceof Date
+    );
+    expect(timestampsParam).toEqual([new Date(1_700_000_000 * 1000)]);
+  });
+
+  it("inserts multiple flashes in one call and returns only the ids that came back from RETURNING", async () => {
+    const pool = new FakePool();
+    const db = new PostgresFlashesDb(pool as unknown as Pool);
+    const client = new FakeInsertNewPool();
+    client.returningRows = [{ flash_id: 111 }, { flash_id: 333 }];
+
+    const inserted = await db.insertNew(client as unknown as Pool, [
+      makeFlash({ flash_id: 111 }),
+      makeFlash({ flash_id: 222 }),
+      makeFlash({ flash_id: 333 }),
+    ]);
+
+    expect(client.calls).toHaveLength(1);
+    expect(inserted).toEqual([111, 333]);
+  });
+});

@@ -49,14 +49,18 @@ export class PostgresFlashesDb extends Postgres<Flash> {
 
     if (validFlashes.length === 0) return [];
 
-    const flashIds = validFlashes.map((f) => f.flash_id);
-    const cities = validFlashes.map((f) => f.city);
-    const players = validFlashes.map((f) => f.player);
-    const imgs = validFlashes.map((f) => f.img);
-    const ipfsCids = validFlashes.map((f) => f.ipfs_cid || "");
-    const texts = validFlashes.map((f) => f.text);
-    const timestamps = validFlashes.map((f) => new Date(f.timestamp * 1000));
-    const flashCounts = validFlashes.map((f) => f.flash_count);
+    // Postgres rejects ON CONFLICT DO UPDATE touching the same row twice in one
+    // statement, which happens whenever a flush window redelivers a flash_id.
+    const dedupedFlashes = this.dedupeByFlashId(validFlashes);
+
+    const flashIds = dedupedFlashes.map((f) => f.flash_id);
+    const cities = dedupedFlashes.map((f) => f.city);
+    const players = dedupedFlashes.map((f) => f.player);
+    const imgs = dedupedFlashes.map((f) => f.img);
+    const ipfsCids = dedupedFlashes.map((f) => f.ipfs_cid || "");
+    const texts = dedupedFlashes.map((f) => f.text);
+    const timestamps = dedupedFlashes.map((f) => new Date(f.timestamp * 1000));
+    const flashCounts = dedupedFlashes.map((f) => f.flash_count);
 
     const sql = `
       INSERT INTO flashes (
@@ -77,8 +81,25 @@ export class PostgresFlashesDb extends Postgres<Flash> {
       ]);
     } catch (error) {
       console.error(`[PostgresFlashesDb] Batch insert failed:`, error);
-      return await this.insertIndividually(validFlashes);
+      return await this.insertIndividually(dedupedFlashes);
     }
+  }
+
+  /**
+   * Collapses repeated flash_ids to one entry, preserving first-occurrence
+   * order. Prefers whichever duplicate carries a non-empty ipfs_cid; falls
+   * back to the last occurrence when both or neither do.
+   */
+  private dedupeByFlashId(flashes: Flash[]): Flash[] {
+    const byFlashId = new Map<number, Flash>();
+    for (const flash of flashes) {
+      const existing = byFlashId.get(flash.flash_id);
+      const existingHasCid = Boolean(existing?.ipfs_cid);
+      const incomingHasCid = Boolean(flash.ipfs_cid);
+      const keepExisting = existing && existingHasCid && !incomingHasCid;
+      if (!keepExisting) byFlashId.set(flash.flash_id, flash);
+    }
+    return [...byFlashId.values()];
   }
 
   private validateFlash(flash: Flash): string[] {

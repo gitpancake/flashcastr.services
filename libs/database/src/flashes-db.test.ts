@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import type { Flash } from "@flashcastr/shared-types";
 import { describe, expect, it } from "vitest";
 import { PostgresFlashesDb } from "./flashes-db.js";
 
@@ -27,5 +28,103 @@ describe("PostgresFlashesDb.getRecentFlashIds", () => {
 
     expect(ids).toEqual([12345, 67890]);
     expect(ids.every((id) => typeof id === "number")).toBe(true);
+  });
+});
+
+function makeFlash(overrides: Partial<Flash>): Flash {
+  return {
+    flash_id: 111,
+    img: "https://example.com/img.png",
+    city: "Paris",
+    text: "flash text",
+    player: "player-one",
+    timestamp: 1_700_000_000,
+    flash_count: "1",
+    ipfs_cid: "",
+    ...overrides,
+  };
+}
+
+/**
+ * Captures whatever params writeMany sends into the UNNEST query so tests can
+ * assert on exactly what would reach Postgres, without a real connection.
+ */
+class FakeWriteManyPool {
+  capturedParams: unknown[] = [];
+
+  async query(_sql: string, params: unknown[] = []) {
+    this.capturedParams = params;
+    return { rows: [] };
+  }
+}
+
+function captureUnnestParams(pool: FakeWriteManyPool) {
+  const [flashIds, cities, players, imgs, ipfsCids, texts, timestamps, flashCounts] = pool.capturedParams as [
+    number[], string[], string[], string[], string[], string[], Date[], string[],
+  ];
+  return { flashIds, cities, players, imgs, ipfsCids, texts, timestamps, flashCounts };
+}
+
+describe("PostgresFlashesDb.writeMany", () => {
+  it("collapses duplicate flash_ids in the batch, keeping the entry with a non-empty ipfs_cid (empty first)", async () => {
+    const flashes: Flash[] = [
+      makeFlash({ flash_id: 111, ipfs_cid: "" }),
+      makeFlash({ flash_id: 111, ipfs_cid: "bafy123" }),
+    ];
+    const pool = new FakeWriteManyPool();
+    const db = new PostgresFlashesDb(pool as unknown as Pool);
+
+    await db.writeMany(flashes);
+
+    const { flashIds, ipfsCids } = captureUnnestParams(pool);
+    expect(flashIds).toEqual([111]);
+    expect(ipfsCids).toEqual(["bafy123"]);
+  });
+
+  it("collapses duplicate flash_ids in the batch, keeping the entry with a non-empty ipfs_cid (non-empty first)", async () => {
+    const flashes: Flash[] = [
+      makeFlash({ flash_id: 111, ipfs_cid: "bafy123" }),
+      makeFlash({ flash_id: 111, ipfs_cid: "" }),
+    ];
+    const pool = new FakeWriteManyPool();
+    const db = new PostgresFlashesDb(pool as unknown as Pool);
+
+    await db.writeMany(flashes);
+
+    const { flashIds, ipfsCids } = captureUnnestParams(pool);
+    expect(flashIds).toEqual([111]);
+    expect(ipfsCids).toEqual(["bafy123"]);
+  });
+
+  it("keeps the last occurrence when both duplicates have a non-empty ipfs_cid", async () => {
+    const flashes: Flash[] = [
+      makeFlash({ flash_id: 111, ipfs_cid: "bafy-old", player: "player-old" }),
+      makeFlash({ flash_id: 111, ipfs_cid: "bafy-new", player: "player-new" }),
+    ];
+    const pool = new FakeWriteManyPool();
+    const db = new PostgresFlashesDb(pool as unknown as Pool);
+
+    await db.writeMany(flashes);
+
+    const { flashIds, ipfsCids, players } = captureUnnestParams(pool);
+    expect(flashIds).toEqual([111]);
+    expect(ipfsCids).toEqual(["bafy-new"]);
+    expect(players).toEqual(["player-new"]);
+  });
+
+  it("keeps the last occurrence when both duplicates have an empty ipfs_cid", async () => {
+    const flashes: Flash[] = [
+      makeFlash({ flash_id: 111, ipfs_cid: "", player: "player-old" }),
+      makeFlash({ flash_id: 111, ipfs_cid: "", player: "player-new" }),
+    ];
+    const pool = new FakeWriteManyPool();
+    const db = new PostgresFlashesDb(pool as unknown as Pool);
+
+    await db.writeMany(flashes);
+
+    const { flashIds, ipfsCids, players } = captureUnnestParams(pool);
+    expect(flashIds).toEqual([111]);
+    expect(ipfsCids).toEqual([""]);
+    expect(players).toEqual(["player-new"]);
   });
 });

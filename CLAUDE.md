@@ -54,7 +54,7 @@ Envelope: `MessageEnvelope<T>` (`id`, `correlationId`, `source`, `type`, `versio
 ## Engine specifics
 
 - **database-engine**: batches (`BATCH_SIZE`, `BATCH_FLUSH_INTERVAL_MS`) and acks only after the upsert AND the confirmed `flash.stored` publish; either failing requeues after `BATCH_RETRY_DELAY_MS`. Prefetch is forced to ≥ 2×BATCH_SIZE.
-- **image-engine**: `CircuitBreaker` (30 consecutive pin failures → open 5 min → half-open single trial). Download/pin retries via `withRetry`. `CONSUMER_RATE_LIMIT` req/min.
+- **image-engine**: `CircuitBreaker` (30 consecutive pin failures → open 5 min → half-open single trial). Download/pin retries via `withRetry`. `CONSUMER_RATE_LIMIT` req/min. Two execution paths selected by `IMAGE_ENGINE_SOURCE` (`rabbitmq` default | `jobs`): the RabbitMQ path (droplet) is unchanged; the `jobs` path runs a `JobWorker` claiming `flash_jobs` `stage='pin'`, completing through a Postgres transaction (`updateIpfsCid` + `complete(pin)` + `enqueue(cast)` + `notifyFlashStored`) instead of publishing — both share one `ImagePinner` behind a `PinCompletionPort`. The breaker pauses/resumes the `jobs` path's `JobWorker` directly; the RabbitMQ path relies on `TransientError` + consumer requeue instead.
 - **neynar-engine**: user lookup by username; casts built by `buildFlashCast`; retry worker every `RETRY_INTERVAL_MS` disables `auto_cast` on revoked/403.
 - **flash-engine**: croner (`CRON_SCHEDULE`, `protect: true`), peak hours in `Europe/Paris`, in-memory `recentFlashIds` dedupe (restart re-publishes; downstream is idempotent). Reads registered players from Postgres at boot and on a periodic refresh loop (default every 5 min), with a refresh-if-stale check before each poll; exits if the initial Postgres load fails.
 - **api**: `withApiKey` (constant-time, `x-api-key`) on `setUserAutoCast`/`deleteUser`; `withRateLimit` per client IP on `initiateSignup` (creates a Neynar-sponsored signer, billed in credits) and `saveFlashIdentification`. `WhereBuilder` + `clampLimit` (max 500) for list queries; `createCache` keyed by args. Subscriptions bridge through `SubscriptionConsumer`. `/health` = Postgres (503 on error) + subscription consumer state. Tracing preloaded via `instrumentation.ts` then `server.ts` is dynamically imported.
@@ -76,10 +76,9 @@ Schema source lives in `migrations/` (see README "Local database"); it documents
 
 ## Deployment
 
-- Railway (Dockerfile per app, auto-deploy on main): flash-engine, database-engine, neynar-engine, api, agent-invaders. Railway service settings own Dockerfile path/watch patterns.
-- Those 5 Dockerfiles are multi-stage: builder runs `npm ci` + `esbuild src/main.ts --bundle --platform=node --format=esm --target=node22` with `pg`/`amqplib`/`@neynar/nodejs-sdk` (and `@opentelemetry/*` for api) marked `--external`; a generated minimal `package.json` installs just those externals into the runtime stage, which copies only that `node_modules` + the bundle — no `libs/`, no source, no dev deps. agent-invaders imports no `@flashcastr/*` lib, so its Dockerfile skips the `libs/` COPY entirely.
-- image-engine's Dockerfile stays tsx-based (droplet is its real deploy path, see below); only used locally via `docker-compose up`.
-- DigitalOcean droplet via `deploy-image-engine.yml` (ssh + pm2): image-engine. The droplet's Node must be ≥22.
+- Railway (Dockerfile per app, auto-deploy on main): flash-engine, database-engine, neynar-engine, api, agent-invaders, image-engine (`IMAGE_ENGINE_SOURCE=jobs`, the `flash_jobs` `pin`-stage worker). Railway service settings own Dockerfile path/watch patterns.
+- Those 6 Dockerfiles are multi-stage: builder runs `npm ci` + `esbuild src/main.ts --bundle --platform=node --format=esm --target=node22` with `pg`/`amqplib`/`@neynar/nodejs-sdk` (and `@opentelemetry/*` for api) marked `--external`; a generated minimal `package.json` installs just those externals into the runtime stage, which copies only that `node_modules` + the bundle — no `libs/`, no source, no dev deps. agent-invaders imports no `@flashcastr/*` lib, so its Dockerfile skips the `libs/` COPY entirely.
+- DigitalOcean droplet via `deploy-image-engine.yml` (ssh + pm2, tsx directly, no Dockerfile): image-engine, still on the RabbitMQ path (`IMAGE_ENGINE_SOURCE` unset). The droplet's Node must be ≥22. image-engine's Dockerfile is only exercised by Railway and locally via `docker-compose up`.
 - CI: `npm run typecheck` + `npm test` on push/PR (no Docker build in CI).
 
 ## Env

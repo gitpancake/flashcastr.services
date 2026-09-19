@@ -13,7 +13,7 @@ export function loadMigrations(dir: string): Migration[] {
     .map((name) => ({ name, sql: readFileSync(join(dir, name), "utf8") }));
 }
 
-export type MigrationStatus = "applied" | "skipped" | "baselined";
+export type MigrationStatus = "applied" | "skipped" | "baselined" | "pending";
 
 export interface MigrationResult {
   name: string;
@@ -36,6 +36,7 @@ export interface MigratorPool {
 
 export interface RunMigrationsOptions {
   baseline?: boolean;
+  baselineUpperBound?: string;
 }
 
 async function ensureMigrationsTable(pool: MigratorPool): Promise<void> {
@@ -54,6 +55,18 @@ export async function runMigrations(
   migrations: Migration[],
   options: RunMigrationsOptions = {}
 ): Promise<MigrationResult[]> {
+  if (options.baseline) {
+    if (!options.baselineUpperBound) {
+      throw new Error(
+        "--baseline requires a migration filename argument, e.g. --baseline 0001_baseline.sql"
+      );
+    }
+    const boundExists = migrations.some((migration) => migration.name === options.baselineUpperBound);
+    if (!boundExists) {
+      throw new Error(`--baseline ${options.baselineUpperBound} matches no loaded migration`);
+    }
+  }
+
   await ensureMigrationsTable(pool);
   const applied = await loadAppliedNames(pool);
   const results: MigrationResult[] = [];
@@ -65,6 +78,10 @@ export async function runMigrations(
     }
 
     if (options.baseline) {
+      if (migration.name > options.baselineUpperBound!) {
+        results.push({ name: migration.name, status: "pending" });
+        continue;
+      }
       await pool.query("INSERT INTO schema_migrations (name) VALUES ($1)", [migration.name]);
       results.push({ name: migration.name, status: "baselined" });
       continue;

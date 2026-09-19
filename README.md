@@ -114,7 +114,7 @@ npm run migrate
 
 This gets you tables the engines and `api` can boot against and store a flash end to end locally.
 
-`npm run migrate` refuses to run without `DATABASE_URL` set, and re-running it is a no-op (already-applied migrations are skipped). `npm run migrate -- --baseline` records the current set of pending migrations as applied *without* running their SQL — used once, in production, to adopt `0001_baseline.sql` (which just documents a schema that already exists there) without trying to re-create existing tables. See `migrations/0002_drop_deleted.sql` for the deploy order that migration requires (baseline → deploy code → run the real migration).
+`npm run migrate` refuses to run without `DATABASE_URL` set, and re-running it is a no-op (already-applied migrations are skipped). `npm run migrate -- --baseline <name>` requires an explicit upper-bound migration filename (e.g. `--baseline 0001_baseline.sql`) and records only migrations up to and including it as applied *without* running their SQL — used in production to adopt a migration that just documents a schema that already exists there, without baselining later migrations that must actually run. Migrations past the bound are left pending for a subsequent plain `npm run migrate`. See `migrations/0002_drop_deleted.sql` for the deploy order that migration requires (baseline → deploy code → run the real migration).
 
 ### Environment Variables
 

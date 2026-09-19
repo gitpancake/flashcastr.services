@@ -4,4 +4,5 @@ export { PostgresFlashesDb } from "./flashes-db.js";
 export { FlashcastrFlashesDb, type FailedCastRow } from "./flashcastr-flashes-db.js";
 export { FlashcastrUsersDb } from "./flashcastr-users-db.js";
 export { FlashIdentificationsDb } from "./flash-identifications-db.js";
+export { FlashJobsDb, type FlashJob, type ClaimedFlashJob, type FlashJobStage } from "./flash-jobs-db.js";
 export { loadMigrations, runMigrations, type Migration, type MigrationResult, type MigratorPool } from "./migrator.js";

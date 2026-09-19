@@ -16,7 +16,6 @@ export const QUEUES = {
   FLASH_RECEIVED: "flash-engine.flash-received",
   IMAGE_PINNED: "image-engine.image-pinned",
   FLASH_STORED: "database-engine.flash-stored",
-  FLASH_CASTED: "neynar-engine.flash-casted",
   API_SUBSCRIPTIONS: "api.subscriptions",
   DEAD_LETTERS: "flashcastr.dead-letters",
 } as const;
@@ -25,7 +24,6 @@ const QUEUE_TO_ROUTING_KEY: Record<string, string> = {
   [QUEUES.FLASH_RECEIVED]: ROUTING_KEYS.FLASH_RECEIVED,
   [QUEUES.IMAGE_PINNED]: ROUTING_KEYS.IMAGE_PINNED,
   [QUEUES.FLASH_STORED]: ROUTING_KEYS.FLASH_STORED,
-  [QUEUES.FLASH_CASTED]: ROUTING_KEYS.FLASH_CASTED,
 };
 
 export async function setupTopology(channel: Channel): Promise<void> {

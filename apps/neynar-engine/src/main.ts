@@ -28,6 +28,7 @@ import { requireEnv, intEnv } from "@flashcastr/config";
 import type { MessageEnvelope, FlashStoredPayload } from "@flashcastr/shared-types";
 import { NeynarCastGateway } from "./neynarCastGateway.js";
 import { FlashCaster, type CastableFlash } from "./flashCaster.js";
+import { completeCastJob } from "./cast-completion.js";
 
 const log = createLogger("neynar-engine");
 const registry = createMetricsRegistry("neynar-engine");
@@ -122,8 +123,7 @@ const castJobWorker = new JobWorker(flashJobsDb, {
     const castedPayload = await flashCaster.handle(castableFlash);
 
     await withTransaction(pool, async (client) => {
-      await flashJobsDb.complete(client, job.flash_id, "cast", job.attempts);
-      if (castedPayload) await notifyFlashCasted(client, castedPayload);
+      await completeCastJob(client, flashJobsDb, job.flash_id, job.attempts, castedPayload, notifyFlashCasted);
     });
   },
 });

@@ -129,6 +129,12 @@ export class PostgresFlashesDb extends Postgres<Flash> {
     return result.map((row) => row.city);
   }
 
+  async getRecentFlashIds(limit: number): Promise<number[]> {
+    const sql = `SELECT flash_id FROM flashes ORDER BY timestamp DESC LIMIT $1`;
+    const rows = await this.query<{ flash_id: number }>(sql, [limit]);
+    return rows.map((r) => r.flash_id);
+  }
+
   private async insertIndividually(flashes: Flash[]): Promise<Flash[]> {
     const successful: Flash[] = [];
     for (const flash of flashes) {

@@ -2,8 +2,15 @@ import { config } from "dotenv";
 config();
 
 import type { ConsumeMessage } from "amqplib";
-import { FlashcastrConsumer, FlashcastrPublisher, QUEUES, ROUTING_KEYS, observeQueueDepths } from "@flashcastr/rabbitmq";
-import { getPool, PostgresFlashesDb, closePool, notifyFlashStored } from "@flashcastr/database";
+import { FlashcastrConsumer, QUEUES, observeQueueDepths } from "@flashcastr/rabbitmq";
+import {
+  getPool,
+  PostgresFlashesDb,
+  FlashJobsDb,
+  closePool,
+  notifyFlashStored,
+  withTransaction,
+} from "@flashcastr/database";
 import { createMetricsRegistry, Counter } from "@flashcastr/metrics";
 import { runService } from "@flashcastr/runtime";
 import { createLogger } from "@flashcastr/logger";
@@ -44,7 +51,7 @@ interface PendingFlash {
 
 const pool = getPool();
 const flashesDb = new PostgresFlashesDb(pool);
-const publisher = new FlashcastrPublisher("database-engine");
+const flashJobsDb = new FlashJobsDb(pool);
 
 function toStoredPayload(flash: Flash): FlashStoredPayload {
   return {
@@ -63,10 +70,11 @@ function toStoredPayload(flash: Flash): FlashStoredPayload {
 }
 
 /**
- * Messages are acked only after the batch is in Postgres AND FLASH_STORED has
- * been confirmed by the broker. Anything else is requeued, which is safe
- * because writeMany is an idempotent upsert. Prefetch must exceed BATCH_SIZE
- * or the batch can never fill while its messages sit unacked.
+ * Messages are acked only after the batch upsert, its cast-job enqueues, and
+ * the flash_stored NOTIFY have all committed in a single Postgres
+ * transaction. Anything else is requeued, which is safe because writeMany is
+ * an idempotent upsert. Prefetch must exceed BATCH_SIZE or the batch can
+ * never fill while its messages sit unacked.
  */
 class DatabaseEngineConsumer extends FlashcastrConsumer<ImagePinnedPayload> {
   private pendingBatch: PendingFlash[] = [];
@@ -132,7 +140,14 @@ class DatabaseEngineConsumer extends FlashcastrConsumer<ImagePinnedPayload> {
 
     let written: Flash[];
     try {
-      written = await flashesDb.writeMany(batch.map((b) => b.flash));
+      written = await withTransaction(pool, async (client) => {
+        const writtenFlashes = await flashesDb.writeMany(batch.map((b) => b.flash), client);
+        for (const flash of writtenFlashes) {
+          await flashJobsDb.enqueue(client, flash.flash_id, "cast");
+          await notifyFlashStored(client, toStoredPayload(flash));
+        }
+        return writtenFlashes;
+      });
     } catch (error) {
       flashesFailed.inc(batch.length);
       flashesRequeued.inc(batch.length);
@@ -141,25 +156,12 @@ class DatabaseEngineConsumer extends FlashcastrConsumer<ImagePinnedPayload> {
       return;
     }
 
-    let published = 0;
     for (const item of batch) {
-      try {
-        const storedPayload = toStoredPayload(item.flash);
-        await publisher.publish(ROUTING_KEYS.FLASH_STORED, storedPayload, item.correlationId);
-        this.ack(item.raw);
-        flashesStored.inc();
-        published++;
-        notifyFlashStored(pool, storedPayload).catch((notifyErr) =>
-          log.warn(`Failed to send flash_stored NOTIFY for ${item.flash.flash_id}:`, notifyErr)
-        );
-      } catch (err) {
-        flashesRequeued.inc();
-        log.error(`Failed to publish FLASH_STORED for ${item.flash.flash_id}, requeueing:`, err);
-        void this.requeue(item.raw, BATCH_RETRY_DELAY_MS);
-      }
+      this.ack(item.raw);
+      flashesStored.inc();
     }
 
-    log.info(`Batch stored: ${batch.length} flashes (${written.length} new/updated, ${published} published)`);
+    log.info(`Batch stored: ${batch.length} flashes (${written.length} new/updated, cast jobs enqueued)`);
   }
 }
 
@@ -177,7 +179,6 @@ runService("database-engine", {
   },
   start: async (ctx) => {
     ctx.onShutdown("postgres", () => closePool());
-    ctx.onShutdown("publisher", () => publisher.close());
     ctx.onShutdown("consumer", async () => {
       await consumer.flush();
       await consumer.close();

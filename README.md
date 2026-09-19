@@ -32,7 +32,8 @@ Space Invaders API
 
 - **Exchange:** `flashcastr.events` (topic, durable)
 - **Dead Letter Exchange:** `flashcastr.dlx` (topic, durable)
-- **Queues:** `flash-engine.flash-received`, `image-engine.image-pinned`, `database-engine.flash-stored`, `neynar-engine.flash-casted`, `api.subscriptions`, `flashcastr.dead-letters`
+- **Queues:** `flash-engine.flash-received`, `image-engine.image-pinned`, `database-engine.flash-stored`, `api.subscriptions`, `flashcastr.dead-letters`
+- `flash.casted` has exactly one binding (`api.subscriptions`) — no dedicated queue
 
 All messages use a common envelope:
 

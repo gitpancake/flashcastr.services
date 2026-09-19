@@ -29,9 +29,10 @@ Lockfile: regenerate with `npx npm@10 install --package-lock-only` after depende
 ## Message Flow
 
 ```
-flash-engine --flash.received--> image-engine --image.pinned--> database-engine --flash.stored--> neynar-engine --flash.casted-->
-                                                                                       └--> api (graphql subscriptions)
+flash-engine --flash.received--> image-engine --image.pinned--> database-engine --flash.stored--> neynar-engine --flash.casted--> api (graphql subscriptions)
 ```
+
+`flash.casted` has exactly one binding (`api.subscriptions`) — no dedicated queue for neynar-engine's own publish.
 
 Envelope: `MessageEnvelope<T>` (`id`, `correlationId`, `source`, `type`, `version`, `timestamp`, `payload`). Publisher sets AMQP `messageId = envelope.id`.
 

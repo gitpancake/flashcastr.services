@@ -3,7 +3,7 @@ config();
 
 import type { ConsumeMessage } from "amqplib";
 import { FlashcastrConsumer, FlashcastrPublisher, QUEUES, ROUTING_KEYS, observeQueueDepths } from "@flashcastr/rabbitmq";
-import { getPool, PostgresFlashesDb, closePool } from "@flashcastr/database";
+import { getPool, PostgresFlashesDb, closePool, notifyFlashStored } from "@flashcastr/database";
 import { createMetricsRegistry, Counter } from "@flashcastr/metrics";
 import { runService } from "@flashcastr/runtime";
 import { createLogger } from "@flashcastr/logger";
@@ -144,10 +144,14 @@ class DatabaseEngineConsumer extends FlashcastrConsumer<ImagePinnedPayload> {
     let published = 0;
     for (const item of batch) {
       try {
-        await publisher.publish(ROUTING_KEYS.FLASH_STORED, toStoredPayload(item.flash), item.correlationId);
+        const storedPayload = toStoredPayload(item.flash);
+        await publisher.publish(ROUTING_KEYS.FLASH_STORED, storedPayload, item.correlationId);
         this.ack(item.raw);
         flashesStored.inc();
         published++;
+        notifyFlashStored(pool, storedPayload).catch((notifyErr) =>
+          log.warn(`Failed to send flash_stored NOTIFY for ${item.flash.flash_id}:`, notifyErr)
+        );
       } catch (err) {
         flashesRequeued.inc();
         log.error(`Failed to publish FLASH_STORED for ${item.flash.flash_id}, requeueing:`, err);

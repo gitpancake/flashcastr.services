@@ -10,7 +10,7 @@ import {
   observeQueueDepths,
   type ConsumerOptions,
 } from "@flashcastr/rabbitmq";
-import { getPool, FlashcastrFlashesDb, FlashcastrUsersDb, closePool } from "@flashcastr/database";
+import { getPool, FlashcastrFlashesDb, FlashcastrUsersDb, closePool, notifyFlashCasted } from "@flashcastr/database";
 import { decrypt } from "@flashcastr/crypto";
 import { createMetricsRegistry, Counter } from "@flashcastr/metrics";
 import { runService } from "@flashcastr/runtime";
@@ -70,6 +70,9 @@ class NeynarEngineConsumer extends FlashcastrConsumer<FlashStoredPayload> {
     const castedPayload = await this.flashCaster.handle(envelope.payload);
     if (!castedPayload) return;
     await this.publisher.publish(ROUTING_KEYS.FLASH_CASTED, castedPayload, envelope.correlationId);
+    notifyFlashCasted(pool, castedPayload).catch((notifyErr) =>
+      log.warn(`Failed to send flash_casted NOTIFY for ${castedPayload.flash_id}:`, notifyErr)
+    );
   }
 }
 

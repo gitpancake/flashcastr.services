@@ -94,7 +94,10 @@ describe("runMigrations", () => {
     const pool = new FakePool();
     const migrations = [{ name: "0001_baseline.sql", sql: "CREATE TABLE foo (id int);" }];
 
-    const results = await runMigrations(pool, migrations, { baseline: true });
+    const results = await runMigrations(pool, migrations, {
+      baseline: true,
+      baselineUpperBound: "0001_baseline.sql",
+    });
 
     expect(results).toEqual([{ name: "0001_baseline.sql", status: "baselined" }]);
     expect(pool.executedMigrationSql).toEqual([]);
@@ -102,20 +105,42 @@ describe("runMigrations", () => {
     expect(pool.clientLog).toEqual([]);
   });
 
-  it("only baselines migrations still pending, applying the rest normally", async () => {
+  it("throws when baseline is requested without a baselineUpperBound", async () => {
     const pool = new FakePool();
-    pool.appliedNames.add("0001_baseline.sql");
+    const migrations = [{ name: "0001_baseline.sql", sql: "CREATE TABLE foo (id int);" }];
+
+    await expect(runMigrations(pool, migrations, { baseline: true })).rejects.toThrow();
+    expect(pool.appliedNames.size).toBe(0);
+  });
+
+  it("throws when baselineUpperBound doesn't match any loaded migration", async () => {
+    const pool = new FakePool();
+    const migrations = [{ name: "0001_baseline.sql", sql: "CREATE TABLE foo (id int);" }];
+
+    await expect(
+      runMigrations(pool, migrations, { baseline: true, baselineUpperBound: "0099_missing.sql" })
+    ).rejects.toThrow();
+    expect(pool.appliedNames.size).toBe(0);
+  });
+
+  it("only baselines migrations up to the given bound, leaving later ones untouched", async () => {
+    const pool = new FakePool();
     const migrations = [
       { name: "0001_baseline.sql", sql: "CREATE TABLE foo (id int);" },
       { name: "0002_drop_deleted.sql", sql: "ALTER TABLE foo DROP COLUMN bar;" },
     ];
 
-    const results = await runMigrations(pool, migrations, { baseline: true });
+    const results = await runMigrations(pool, migrations, {
+      baseline: true,
+      baselineUpperBound: "0001_baseline.sql",
+    });
 
     expect(results).toEqual([
-      { name: "0001_baseline.sql", status: "skipped" },
-      { name: "0002_drop_deleted.sql", status: "baselined" },
+      { name: "0001_baseline.sql", status: "baselined" },
+      { name: "0002_drop_deleted.sql", status: "pending" },
     ]);
     expect(pool.executedMigrationSql).toEqual([]);
+    expect(pool.appliedNames.has("0001_baseline.sql")).toBe(true);
+    expect(pool.appliedNames.has("0002_drop_deleted.sql")).toBe(false);
   });
 });

@@ -1,169 +1,123 @@
+import pino from "pino";
+import { pinoLoki } from "pino-loki";
+
+export type LogLevel = "info" | "warn" | "error" | "debug";
+
 function getLokiUrl(): string | undefined {
   return process.env.LOKI_URL;
 }
 
 function parseLokiUrl(raw: string): {
-  url: string;
-  headers: Record<string, string>;
+  host: string;
+  basicAuth?: { username: string; password: string };
 } {
   const parsed = new URL(raw);
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
+  let basicAuth: { username: string; password: string } | undefined;
   if (parsed.username) {
-    const credentials = Buffer.from(
-      `${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password)}`
-    ).toString("base64");
-    headers["Authorization"] = `Basic ${credentials}`;
+    basicAuth = {
+      username: decodeURIComponent(parsed.username),
+      password: decodeURIComponent(parsed.password),
+    };
     parsed.username = "";
     parsed.password = "";
   }
-  return { url: parsed.toString().replace(/\/$/, ""), headers };
+  return { host: parsed.toString().replace(/\/$/, ""), basicAuth };
 }
 
-let lokiConfig: ReturnType<typeof parseLokiUrl> | null = null;
+interface LokiDestination {
+  stream: NodeJS.WritableStream;
+  flush(): Promise<void>;
+}
 
-function getLokiConfig() {
+function createLokiDestination(): LokiDestination | null {
   const raw = getLokiUrl();
   if (!raw) return null;
-  if (!lokiConfig) lokiConfig = parseLokiUrl(raw);
-  return lokiConfig;
-}
 
-const BATCH_INTERVAL_MS = 2000;
-const BATCH_SIZE_LIMIT = 100;
-
-type LogLevel = "info" | "warn" | "error" | "debug";
-
-interface LokiStream {
-  stream: Record<string, string>;
-  values: [string, string][];
-}
-
-let batchBuffer: LokiStream[] = [];
-let flushTimer: ReturnType<typeof setInterval> | null = null;
-
-function startFlushTimer() {
-  if (flushTimer || !getLokiUrl()) return;
-  flushTimer = setInterval(() => { void flushToLoki(); }, BATCH_INTERVAL_MS);
-  if (flushTimer && typeof flushTimer === "object" && "unref" in flushTimer) {
-    flushTimer.unref();
-  }
-}
-
-async function flushToLoki(): Promise<void> {
-  const config = getLokiConfig();
-  if (batchBuffer.length === 0 || !config) return;
-
-  const streams = batchBuffer;
-  batchBuffer = [];
-
-  try {
-    const res = await fetch(`${config.url}/loki/api/v1/push`, {
-      method: "POST",
-      headers: config.headers,
-      body: JSON.stringify({ streams }),
-    });
-    if (!res.ok) {
-      process.stderr.write(`[logger] Loki push failed: ${res.status} ${res.statusText}\n`);
-    }
-  } catch (err) {
-    process.stderr.write(`[logger] Loki fetch error: ${err instanceof Error ? err.message : String(err)}\n`);
-  }
-}
-
-/** Ship any buffered log lines to Loki. Call before process.exit so the last lines are not lost. */
-export async function flushLogs(): Promise<void> {
-  await flushToLoki();
-}
-
-let lokiStatusLogged = false;
-
-function pushToLoki(serviceName: string, level: LogLevel, message: string) {
-  if (!lokiStatusLogged) {
-    lokiStatusLogged = true;
-    const url = getLokiUrl();
-    process.stderr.write(
-      `[logger] LOKI_URL ${url ? `set (${url.replace(/\/\/.*@/, "//***@")})` : "NOT SET"}\n`
-    );
-  }
-  if (!getLokiUrl()) return;
-
-  const nanoseconds = `${Date.now()}000000`;
-
-  batchBuffer.push({
-    stream: { service: serviceName, level },
-    values: [[nanoseconds, message]],
+  const { host, basicAuth } = parseLokiUrl(raw);
+  const stream = pinoLoki({
+    host,
+    basicAuth,
+    propsToLabels: ["service", "level"],
+    batching: { interval: 2 },
   });
 
-  if (batchBuffer.length >= BATCH_SIZE_LIMIT) {
-    void flushToLoki();
-  } else {
-    startFlushTimer();
+  return {
+    stream,
+    flush: () => new Promise((resolve) => stream.end(() => resolve())),
+  };
+}
+
+function serializeErrorValues(obj: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(obj).map(([key, value]) => [
+      key,
+      value instanceof Error ? { message: value.message, stack: value.stack } : value,
+    ])
+  );
+}
+
+function toPinoArgs(args: unknown[]): [Record<string, unknown> | undefined, string] {
+  let mergingObject: Record<string, unknown> | undefined;
+  const messageParts: string[] = [];
+
+  for (const arg of args) {
+    if (arg instanceof Error) {
+      mergingObject = { ...mergingObject, err: arg };
+    } else if (arg !== null && typeof arg === "object") {
+      mergingObject = { ...mergingObject, ...serializeErrorValues(arg as Record<string, unknown>) };
+    } else {
+      messageParts.push(String(arg));
+    }
   }
+
+  return [mergingObject, messageParts.join(" ")];
 }
 
-function describeError(err: Error): string {
-  return err.stack ?? `${err.name}: ${err.message}`;
-}
-
-function safeStringify(value: unknown): string {
-  try {
-    return JSON.stringify(value, (_key, nested) =>
-      nested instanceof Error ? { name: nested.name, message: nested.message, stack: nested.stack } : nested
-    );
-  } catch {
-    return String(value);
-  }
-}
-
-export function formatLogArgs(args: unknown[]): string {
-  return args
-    .map((arg) => {
-      if (arg instanceof Error) return describeError(arg);
-      if (typeof arg === "object") return safeStringify(arg);
-      return String(arg);
-    })
-    .join(" ");
-}
-
-export function createLogger(serviceName: string) {
-  const prefix = `[${serviceName}]`;
+export function createLogger(serviceName: string, destination?: pino.DestinationStream) {
+  // Each logger gets its own Loki stream (not a shared/memoized one): flush()
+  // ends the stream, and a process can have multiple independent loggers
+  // (e.g. api's main.ts and server.ts) whose exit paths aren't coordinated —
+  // sharing one stream would let one logger's flush silently kill another's
+  // still-in-flight writes.
+  const loki = destination ? null : createLokiDestination();
+  const pinoLogger = pino(
+    {
+      level: process.env.LOG_LEVEL || "info",
+      base: { service: serviceName },
+      formatters: {
+        level(label) {
+          return { level: label };
+        },
+      },
+    },
+    destination ?? loki?.stream
+  );
 
   function log(level: LogLevel, args: unknown[]) {
-    const message = formatLogArgs(args);
-
+    const [mergingObject, message] = toPinoArgs(args);
     switch (level) {
-      case "error":
-        console.error(prefix, ...args);
+      case "info":
+        mergingObject ? pinoLogger.info(mergingObject, message) : pinoLogger.info(message);
         break;
       case "warn":
-        console.warn(prefix, ...args);
+        mergingObject ? pinoLogger.warn(mergingObject, message) : pinoLogger.warn(message);
+        break;
+      case "error":
+        mergingObject ? pinoLogger.error(mergingObject, message) : pinoLogger.error(message);
         break;
       case "debug":
-        console.debug(prefix, ...args);
+        mergingObject ? pinoLogger.debug(mergingObject, message) : pinoLogger.debug(message);
         break;
-      default:
-        console.log(prefix, ...args);
     }
-
-    pushToLoki(serviceName, level, message);
   }
 
   return {
     info: (...args: unknown[]) => log("info", args),
     warn: (...args: unknown[]) => log("warn", args),
     error: (...args: unknown[]) => log("error", args),
-    debug: (...args: unknown[]) => {
-      if (process.env.LOG_LEVEL === "debug") {
-        log("debug", args);
-      }
-    },
+    debug: (...args: unknown[]) => log("debug", args),
+    flush: () => (loki ? loki.flush() : Promise.resolve()),
   };
 }
-
-process.on("beforeExit", () => {
-  if (getLokiUrl()) void flushToLoki();
-});
 
 export type Logger = ReturnType<typeof createLogger>;

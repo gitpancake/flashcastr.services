@@ -1,13 +1,13 @@
 import "./instrumentation.js";
 
 const { startApi } = await import("./server.js");
-const { createLogger, flushLogs } = await import("@flashcastr/logger");
+const { createLogger } = await import("@flashcastr/logger");
 
 const log = createLogger("api");
 
 async function fail(message: string, err: unknown): Promise<void> {
   log.error(message, err);
-  await flushLogs();
+  await log.flush();
   process.exit(1);
 }
 

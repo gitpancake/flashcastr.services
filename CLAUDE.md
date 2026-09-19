@@ -32,7 +32,7 @@ Lockfile: regenerate with `npx npm@10 install --package-lock-only` after depende
 flash-engine --flash.received--> image-engine --image.pinned--> database-engine --flash.stored--> neynar-engine --flash.casted--> api (graphql subscriptions)
 ```
 
-`flash.casted` has exactly one binding (`api.subscriptions`) — no dedicated queue for neynar-engine's own publish.
+`flash.casted` has no dedicated durable queue for neynar-engine's own publish — its only consumer is each running `api` instance's per-replica exclusive, auto-delete queue (see Reliability contract below), which also binds `flash.stored`.
 
 Envelope: `MessageEnvelope<T>` (`id`, `correlationId`, `source`, `type`, `version`, `timestamp`, `payload`). Publisher sets AMQP `messageId = envelope.id`.
 
@@ -46,6 +46,7 @@ Envelope: `MessageEnvelope<T>` (`id`, `correlationId`, `source`, `type`, `versio
   - Malformed / non-envelope bodies → dead-letter.
   - Attempts are tracked in-process by `messageId` (requeue does not add `x-death`).
 - `manualAck: true` (database-engine) hands `ack/requeue/deadLetter` to the handler; settles are ignored if the delivery channel has been replaced (broker redelivers).
+- `exclusive: { bindings: string[] }` (api's `SubscriptionConsumer` only) skips the fixed durable queue: `assertQueue("", { exclusive: true, autoDelete: true })` per connect/reconnect, bound to the given routing keys on `EXCHANGES.EVENTS`. Every api replica gets its own queue and sees every event; nothing buffers across a restart or reconnect.
 - Recovers from connection close, channel close, and broker-side consumer cancel; connect races a 20s handshake deadline.
 - `isConsuming()` feeds `/health`; `observeQueueDepths()` exports `rabbitmq_queue_messages{queue}` incl. `flashcastr.dead-letters`.
 - Queue args (`x-max-length: 100000`, DLX) cannot change without recreating queues; overflow is drop-head → dead-lettered. Nothing consumes the DLQ: watch the gauge, replay with the script.

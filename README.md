@@ -32,8 +32,8 @@ Space Invaders API
 
 - **Exchange:** `flashcastr.events` (topic, durable)
 - **Dead Letter Exchange:** `flashcastr.dlx` (topic, durable)
-- **Queues:** `flash-engine.flash-received`, `image-engine.image-pinned`, `database-engine.flash-stored`, `api.subscriptions`, `flashcastr.dead-letters`
-- `flash.casted` has exactly one binding (`api.subscriptions`) — no dedicated queue
+- **Durable queues:** `flash-engine.flash-received`, `image-engine.image-pinned`, `database-engine.flash-stored`, `flashcastr.dead-letters`
+- `flash.casted` and `flash.stored` are also bound to a server-named, exclusive, auto-delete queue per running `api` instance (no dedicated durable queue) — this backs GraphQL subscriptions; each replica sees every event, and nothing buffers across an api restart
 
 All messages use a common envelope:
 

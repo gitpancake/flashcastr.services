@@ -14,7 +14,7 @@ function activeUser(overrides: Partial<FlashcastrUser>): FlashcastrUser {
 
 describe("loadRegisteredPlayers", () => {
   it("returns active usernames lowercased as a Set", async () => {
-    const usersDb = { getAllActive: vi.fn().mockResolvedValue([activeUser({ username: "SpaceInvader22" }), activeUser({ username: "player2" })]) };
+    const usersDb = { getAll: vi.fn().mockResolvedValue([activeUser({ username: "SpaceInvader22" }), activeUser({ username: "player2" })]) };
 
     const players = await loadRegisteredPlayers(usersDb);
 
@@ -22,7 +22,7 @@ describe("loadRegisteredPlayers", () => {
   });
 
   it("returns an empty Set when there are no active users", async () => {
-    const usersDb = { getAllActive: vi.fn().mockResolvedValue([]) };
+    const usersDb = { getAll: vi.fn().mockResolvedValue([]) };
 
     const players = await loadRegisteredPlayers(usersDb);
 

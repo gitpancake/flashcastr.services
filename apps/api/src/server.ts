@@ -113,10 +113,10 @@ const server = new ApolloServer({
 // Update user and flash counts periodically
 async function updateGauges() {
   try {
-    const userResult = await pool.query("SELECT COUNT(*)::int as count FROM flashcastr_users WHERE deleted = false");
+    const userResult = await pool.query("SELECT COUNT(*)::int as count FROM flashcastr_users");
     activeUsersTotal.set(userResult.rows[0]?.count ?? 0);
 
-    const flashResult = await pool.query("SELECT COUNT(*)::int as count FROM flashcastr_flashes WHERE deleted = false");
+    const flashResult = await pool.query("SELECT COUNT(*)::int as count FROM flashcastr_flashes");
     totalFlashesCount.set(flashResult.rows[0]?.count ?? 0);
   } catch (error) {
     log.error("Error updating gauges:", error);

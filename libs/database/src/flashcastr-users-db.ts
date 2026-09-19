@@ -20,13 +20,13 @@ export class FlashcastrUsersDb extends Postgres<FlashcastrUser> {
     return this.query(`SELECT * FROM flashcastr_users ${whereClause}`, values);
   }
 
-  async getAllActive(): Promise<FlashcastrUser[]> {
-    return this.query("SELECT * FROM flashcastr_users WHERE deleted = false");
+  async getAll(): Promise<FlashcastrUser[]> {
+    return this.query("SELECT * FROM flashcastr_users");
   }
 
-  /** Public projection (no signer) of active users, optionally filtered by exact username and/or fid. */
+  /** Public projection (no signer) of users, optionally filtered by exact username and/or fid. */
   async listPublic(filter: { username?: string; fid?: number } = {}): Promise<PublicFlashcastrUser[]> {
-    const conditions = ["deleted = false"];
+    const conditions: string[] = [];
     const params: unknown[] = [];
 
     if (filter.username) {
@@ -38,32 +38,32 @@ export class FlashcastrUsersDb extends Postgres<FlashcastrUser> {
       conditions.push(`fid = $${params.length}`);
     }
 
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
     return this.query<PublicFlashcastrUser>(
-      `SELECT fid, username, auto_cast FROM flashcastr_users WHERE ${conditions.join(" AND ")}`,
+      `SELECT fid, username, auto_cast FROM flashcastr_users ${whereClause}`,
       params
     );
   }
 
   async getByFid(fid: number): Promise<FlashcastrUser | null> {
     return this.queryOne(
-      "SELECT * FROM flashcastr_users WHERE fid = $1 AND deleted = false",
+      "SELECT * FROM flashcastr_users WHERE fid = $1",
       [fid]
     );
   }
 
   async getByUsername(username: string): Promise<FlashcastrUser | null> {
     return this.queryOne(
-      "SELECT * FROM flashcastr_users WHERE LOWER(username) = LOWER($1) AND deleted = false LIMIT 1",
+      "SELECT * FROM flashcastr_users WHERE LOWER(username) = LOWER($1) LIMIT 1",
       [username]
     );
   }
 
   async insert(user: FlashcastrUser): Promise<number> {
     const sql = `
-      INSERT INTO flashcastr_users (fid, username, signer_uuid, auto_cast, deleted)
-      VALUES ($1, $2, $3, $4, false)
+      INSERT INTO flashcastr_users (fid, username, signer_uuid, auto_cast)
+      VALUES ($1, $2, $3, $4)
       ON CONFLICT (fid) DO UPDATE SET
-        deleted = false,
         username = EXCLUDED.username,
         signer_uuid = EXCLUDED.signer_uuid,
         auto_cast = EXCLUDED.auto_cast

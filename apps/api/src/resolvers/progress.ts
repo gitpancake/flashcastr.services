@@ -40,7 +40,6 @@ export function createProgressResolvers(pool: Pool) {
               ff.user_fid = $1
               AND f.timestamp >= date_trunc('day', NOW() - make_interval(days => $2))
               AND f.timestamp < date_trunc('day', NOW()) + INTERVAL '1 day'
-              AND ff.deleted = false
             GROUP BY DATE(f.timestamp)
           )
           SELECT

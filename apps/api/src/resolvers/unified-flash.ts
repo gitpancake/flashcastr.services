@@ -35,7 +35,7 @@ const UNIFIED_FLASH_SELECT = `
     fi.similarity as identification_similarity,
     fi.confidence as identification_confidence
   FROM flashes f
-  LEFT JOIN flashcastr_flashes ff ON f.flash_id = ff.flash_id AND ff.deleted = false
+  LEFT JOIN flashcastr_flashes ff ON f.flash_id = ff.flash_id
   LEFT JOIN flash_identifications fi ON f.ipfs_cid = fi.source_ipfs_cid
 `;
 

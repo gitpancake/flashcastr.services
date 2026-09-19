@@ -96,6 +96,25 @@ docker-compose up
 npx tsx --watch apps/flash-engine/src/main.ts
 ```
 
+### Local database
+
+Schema lives in `migrations/` (plain SQL, no ORM) and is applied by `npm run migrate`, a small runner (`scripts/migrate.ts`) that tracks what's been applied in a `schema_migrations` table.
+
+```bash
+# Start Postgres only
+docker-compose up -d postgres
+
+# Point at it (docker-compose's postgres service, matching its POSTGRES_* env)
+export DATABASE_URL=postgresql://flashcastr:flashcastr@localhost:5432/flashcastr
+
+# Apply all pending migrations
+npm run migrate
+```
+
+This gets you tables the engines and `api` can boot against and store a flash end to end locally.
+
+`npm run migrate` refuses to run without `DATABASE_URL` set, and re-running it is a no-op (already-applied migrations are skipped). `npm run migrate -- --baseline` records the current set of pending migrations as applied *without* running their SQL — used once, in production, to adopt `0001_baseline.sql` (which just documents a schema that already exists there) without trying to re-create existing tables. See `migrations/0002_drop_deleted.sql` for the deploy order that migration requires (baseline → deploy code → run the real migration).
+
 ### Environment Variables
 
 Copy `.env.example` to `.env.local` and fill in values:

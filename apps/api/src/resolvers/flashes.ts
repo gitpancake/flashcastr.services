@@ -48,7 +48,7 @@ export function createFlashResolvers(pool: Pool) {
     Query: {
       flashes: async (_: unknown, args: { fid?: number; username?: string; page?: number; limit?: number; city?: string }) => {
         const limit = clampLimit(args.limit, DEFAULT_LIMIT);
-        const where = new WhereBuilder(["ff.deleted = false", "fu.deleted = false"])
+        const where = new WhereBuilder()
           .eq("ff.user_fid", args.fid)
           .eq("ff.user_username", args.username)
           .eqIgnoreCase("f.city", args.city);
@@ -80,7 +80,7 @@ export function createFlashResolvers(pool: Pool) {
 
       flash: async (_: unknown, args: { id: number }) => {
         const result = await pool.query(
-          `${FLASHCASTR_FLASH_SELECT} WHERE ff.id = $1 AND ff.deleted = false AND fu.deleted = false`,
+          `${FLASHCASTR_FLASH_SELECT} WHERE ff.id = $1`,
           [args.id]
         );
         return result.rows.length === 0 ? null : toFlashcastrFlash(result.rows[0]);
@@ -90,7 +90,7 @@ export function createFlashResolvers(pool: Pool) {
         const countResult = await pool.query(
           `SELECT COUNT(*)::int as count FROM flashcastr_flashes ff
            INNER JOIN flashcastr_users fu ON ff.user_fid = fu.fid
-           WHERE ff.user_fid = $1 AND ff.deleted = false AND fu.deleted = false`,
+           WHERE ff.user_fid = $1`,
           [args.fid]
         );
 
@@ -98,7 +98,7 @@ export function createFlashResolvers(pool: Pool) {
           `SELECT DISTINCT f.city FROM flashcastr_flashes ff
            INNER JOIN flashcastr_users fu ON ff.user_fid = fu.fid
            INNER JOIN flashes f ON ff.flash_id = f.flash_id
-           WHERE ff.user_fid = $1 AND ff.deleted = false AND fu.deleted = false AND f.city IS NOT NULL`,
+           WHERE ff.user_fid = $1 AND f.city IS NOT NULL`,
           [args.fid]
         );
 

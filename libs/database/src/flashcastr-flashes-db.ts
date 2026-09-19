@@ -62,8 +62,6 @@ export class FlashcastrFlashesDb extends Postgres<FlashcastrFlash> {
       INNER JOIN flashcastr_users fu ON ff.user_fid = fu.fid
       INNER JOIN flashes f ON ff.flash_id = f.flash_id
       WHERE ff.cast_hash IS NULL
-        AND ff.deleted = false
-        AND fu.deleted = false
         AND fu.auto_cast = true
         AND f.ipfs_cid IS NOT NULL
         AND f.ipfs_cid != ''

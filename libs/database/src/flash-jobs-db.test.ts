@@ -80,7 +80,7 @@ describe.skipIf(!process.env.DATABASE_URL)("FlashJobsDb", () => {
     const flash = await insertFlash({ flash_id: 333 });
     await db.enqueue(pool, flash.flash_id, "cast");
 
-    await db.complete(pool, flash.flash_id, "cast");
+    await db.complete(pool, flash.flash_id, "cast", 0);
 
     const { rows } = await pool.query("SELECT * FROM flash_jobs WHERE flash_id = $1 AND stage = $2", [
       flash.flash_id,
@@ -144,7 +144,7 @@ describe.skipIf(!process.env.DATABASE_URL)("FlashJobsDb", () => {
     await db.claim("pin", 1, 60_000, 5);
 
     const retryAtMs = Date.now() - 1000;
-    await db.fail(flash.flash_id, "pin", "pin download timed out", retryAtMs);
+    await db.fail(flash.flash_id, "pin", "pin download timed out", retryAtMs, 1);
 
     const { rows } = await pool.query("SELECT * FROM flash_jobs WHERE flash_id = $1 AND stage = $2", [
       flash.flash_id,
@@ -161,7 +161,7 @@ describe.skipIf(!process.env.DATABASE_URL)("FlashJobsDb", () => {
     await db.claim("pin", 1, 60_000, 5);
 
     const retryAtMs = Date.now() - 1000;
-    await db.defer(flash.flash_id, "pin", retryAtMs);
+    await db.defer(flash.flash_id, "pin", retryAtMs, 1);
 
     const afterDefer = await pool.query("SELECT * FROM flash_jobs WHERE flash_id = $1 AND stage = $2", [
       flash.flash_id,
@@ -169,12 +169,62 @@ describe.skipIf(!process.env.DATABASE_URL)("FlashJobsDb", () => {
     ]);
     expect(afterDefer.rows[0].attempts).toBe(0);
 
-    await db.defer(flash.flash_id, "pin", retryAtMs);
+    await db.defer(flash.flash_id, "pin", retryAtMs, 0);
 
     const afterSecondDefer = await pool.query(
       "SELECT * FROM flash_jobs WHERE flash_id = $1 AND stage = $2",
       [flash.flash_id, "pin"]
     );
     expect(afterSecondDefer.rows[0].attempts).toBe(0);
+  });
+
+  it("lease fencing: a stale settle (defer/fail/complete) with an outdated expectedAttempts is a no-op", async () => {
+    const flash = await insertFlash({ flash_id: 901 });
+    await db.enqueue(pool, flash.flash_id, "pin");
+
+    // Worker A claims (attempts 0 -> 1) with a lease that expires quickly.
+    const firstClaim = await db.claim("pin", 1, 50, 5);
+    expect(firstClaim[0].attempts).toBe(1);
+    const staleAttempts = firstClaim[0].attempts;
+
+    // Lease expires; Worker B reclaims (attempts 1 -> 2) with a fresh, live lease.
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    const secondClaim = await db.claim("pin", 1, 60_000, 5);
+    expect(secondClaim[0].attempts).toBe(2);
+    const liveNextAttemptAt = new Date(secondClaim[0].next_attempt_at).getTime();
+
+    // Worker A, unaware it lost the lease, tries to defer using its stale attempts count.
+    await db.defer(flash.flash_id, "pin", Date.now() - 1000, staleAttempts);
+
+    const afterStaleDefer = await pool.query(
+      "SELECT * FROM flash_jobs WHERE flash_id = $1 AND stage = $2",
+      [flash.flash_id, "pin"]
+    );
+    expect(afterStaleDefer.rows[0].attempts).toBe(2);
+    expect(new Date(afterStaleDefer.rows[0].next_attempt_at).getTime()).toBe(liveNextAttemptAt);
+
+    // Worker A's stale fail() and complete() calls are equally inert.
+    await db.fail(flash.flash_id, "pin", "stale failure", Date.now() - 1000, staleAttempts);
+    const afterStaleFail = await pool.query(
+      "SELECT * FROM flash_jobs WHERE flash_id = $1 AND stage = $2",
+      [flash.flash_id, "pin"]
+    );
+    expect(afterStaleFail.rows[0].last_error).not.toBe("stale failure");
+    expect(new Date(afterStaleFail.rows[0].next_attempt_at).getTime()).toBe(liveNextAttemptAt);
+
+    await db.complete(pool, flash.flash_id, "pin", staleAttempts);
+    const afterStaleComplete = await pool.query(
+      "SELECT * FROM flash_jobs WHERE flash_id = $1 AND stage = $2",
+      [flash.flash_id, "pin"]
+    );
+    expect(afterStaleComplete.rows).toHaveLength(1);
+
+    // Worker B, using the CORRECT current attempts, settles successfully.
+    await db.complete(pool, flash.flash_id, "pin", secondClaim[0].attempts);
+    const afterLiveComplete = await pool.query(
+      "SELECT * FROM flash_jobs WHERE flash_id = $1 AND stage = $2",
+      [flash.flash_id, "pin"]
+    );
+    expect(afterLiveComplete.rows).toHaveLength(0);
   });
 });

@@ -45,6 +45,11 @@ export class JobWorker {
   ) {}
 
   start(): void {
+    // A second call while already running would overwrite this.loops/
+    // stopSignal, orphaning the first batch: close() would then only await
+    // the new batch, resolving before an in-flight handler from the
+    // orphaned batch finishes.
+    if (this.running) return;
     this.running = true;
     this.stopSignal = new Promise((resolve) => {
       this.resolveStopSignal = resolve;
@@ -95,26 +100,38 @@ export class JobWorker {
     try {
       await this.options.handle(job);
     } catch (err) {
-      await this.settleFailure(job, err as Error);
+      await this.settleFailureSafely(job, err as Error);
+    }
+  }
+
+  // A DB hiccup here must not propagate: that would kill this loop's
+  // while(this.running) iteration permanently (runLoop/close() don't guard
+  // processJob). Worst case the job's lease simply expires and gets
+  // reclaimed later, which is an acceptable outcome.
+  private async settleFailureSafely(job: ClaimedFlashJob, error: Error): Promise<void> {
+    try {
+      await this.settleFailure(job, error);
+    } catch (settleErr) {
+      console.error(`[JobWorker] Failed to settle job ${job.flash_id}/${job.stage}:`, settleErr);
     }
   }
 
   private async settleFailure(job: ClaimedFlashJob, error: Error): Promise<void> {
     if (error instanceof TransientError) {
-      await this.db.defer(job.flash_id, job.stage, Date.now() + error.retryAfterMs);
+      await this.db.defer(job.flash_id, job.stage, Date.now() + error.retryAfterMs, job.attempts);
       return;
     }
 
     const { shouldRetry } = this.options;
     const isRetryable = !(error instanceof FatalMessageError) && shouldRetry !== undefined && shouldRetry(error);
     if (!isRetryable) {
-      await this.db.fail(job.flash_id, job.stage, error.message, NEVER_RETRY_AT_MS);
+      await this.db.fail(job.flash_id, job.stage, error.message, NEVER_RETRY_AT_MS, job.attempts);
       return;
     }
 
     const baseDelayMs = this.options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
     const maxDelayMs = this.options.retryMaxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
     const delay = Math.min(baseDelayMs * Math.pow(2, job.attempts - 1), maxDelayMs);
-    await this.db.fail(job.flash_id, job.stage, error.message, Date.now() + delay);
+    await this.db.fail(job.flash_id, job.stage, error.message, Date.now() + delay, job.attempts);
   }
 }

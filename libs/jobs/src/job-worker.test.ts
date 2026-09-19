@@ -123,7 +123,7 @@ describe("JobWorker", () => {
     await settle();
     await worker.close();
 
-    expect(db.fail).toHaveBeenCalledWith(job.flash_id, job.stage, "poison", NEVER_RETRY_AT_MS);
+    expect(db.fail).toHaveBeenCalledWith(job.flash_id, job.stage, "poison", NEVER_RETRY_AT_MS, job.attempts);
     expect(db.defer).not.toHaveBeenCalled();
   });
 
@@ -146,7 +146,7 @@ describe("JobWorker", () => {
     await settle();
     await worker.close();
 
-    expect(db.fail).toHaveBeenCalledWith(job.flash_id, job.stage, "boom", NEVER_RETRY_AT_MS);
+    expect(db.fail).toHaveBeenCalledWith(job.flash_id, job.stage, "boom", NEVER_RETRY_AT_MS, job.attempts);
   });
 
   it("backs off a retryable plain Error using job.attempts, capped at retryMaxDelayMs", async () => {
@@ -236,6 +236,66 @@ describe("JobWorker", () => {
     await settle();
     resolveHandle?.();
     await closed;
+  });
+
+  it("survives settleFailure rejecting: logs and keeps the loop claiming on the next tick", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const claim = vi.fn(async () => [] as ClaimedFlashJob[]);
+    claim.mockResolvedValueOnce([claimedJob()]);
+    const fail = vi.fn(async () => {
+      throw new Error("db unreachable");
+    });
+    const db = fakeDb({ claim, fail });
+    const handle = vi.fn(async () => {
+      throw new Error("handler blew up");
+    });
+    const worker = new JobWorker(db as unknown as FlashJobsDb, {
+      stage: "pin",
+      concurrency: 1,
+      leaseMs: 1000,
+      maxAttempts: 5,
+      pollIntervalMs: 1000,
+      handle,
+    });
+
+    worker.start();
+    await settle();
+
+    expect(fail).toHaveBeenCalledTimes(1);
+    expect(consoleErrorSpy).toHaveBeenCalled();
+
+    // The loop iteration completed despite settleFailure rejecting: it looped
+    // back around to an empty claim, then idled. The next poll tick claims
+    // again instead of the lane being dead.
+    const claimsAfterSettleFailure = claim.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(claim.mock.calls.length).toBeGreaterThan(claimsAfterSettleFailure);
+
+    await worker.close();
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("start() is a no-op when already running: a second call doesn't spawn a duplicate batch of loops", async () => {
+    const claim = vi.fn(async () => [] as ClaimedFlashJob[]);
+    const db = fakeDb({ claim });
+    const worker = new JobWorker(db as unknown as FlashJobsDb, {
+      stage: "pin",
+      concurrency: 1,
+      leaseMs: 1000,
+      maxAttempts: 5,
+      pollIntervalMs: 1000,
+      handle: vi.fn(async () => undefined),
+    });
+
+    worker.start();
+    worker.start();
+    await settle();
+
+    // With concurrency 1 and a single call to start(), exactly one loop
+    // should have polled once. A duplicated batch would poll twice.
+    expect(claim).toHaveBeenCalledTimes(1);
+
+    await worker.close();
   });
 
   it("isRunning reflects start()/close()", async () => {

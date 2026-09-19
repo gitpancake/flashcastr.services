@@ -36,9 +36,13 @@ function oldestReadyGauge(registry: Registry): Gauge<"stage"> {
   });
 }
 
+// next_attempt_at > now() + 100 years also catches JobWorker.settleFailure's
+// non-retryable path: it stamps NEVER_RETRY_AT_MS (~year 275760) without
+// touching attempts, so a job killed on its first attempt would otherwise
+// fall through to 'leased' forever. No real backoff delay reaches 100 years.
 const STATE_COUNTS_SQL = `
   SELECT
-    CASE WHEN attempts >= $2 THEN 'dead'
+    CASE WHEN attempts >= $2 OR next_attempt_at > now() + interval '100 years' THEN 'dead'
          WHEN next_attempt_at <= now() THEN 'ready'
          ELSE 'leased' END AS state,
     count(*)::int AS count

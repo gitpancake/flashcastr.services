@@ -67,25 +67,45 @@ export class FlashJobsDb extends Postgres<FlashJob> {
     return await this.query<ClaimedFlashJob>(sql, [stage, leaseMs, limit, maxAttempts]);
   }
 
-  async complete(client: Pool | PoolClient, flashId: number, stage: FlashJobStage): Promise<void> {
-    await client.query(`DELETE FROM flash_jobs WHERE flash_id = $1 AND stage = $2`, [flashId, stage]);
+  // expectedAttempts fences this settle against claim()'s lease: if another
+  // worker has since reclaimed the job (attempts moved on), the WHERE clause
+  // matches no row and the call is a silent no-op instead of clobbering the
+  // live claim.
+  async complete(
+    client: Pool | PoolClient,
+    flashId: number,
+    stage: FlashJobStage,
+    expectedAttempts: number
+  ): Promise<void> {
+    await client.query(`DELETE FROM flash_jobs WHERE flash_id = $1 AND stage = $2 AND attempts = $3`, [
+      flashId,
+      stage,
+      expectedAttempts,
+    ]);
   }
 
-  async fail(flashId: number, stage: FlashJobStage, error: string, retryAtMs: number): Promise<void> {
+  async fail(
+    flashId: number,
+    stage: FlashJobStage,
+    error: string,
+    retryAtMs: number,
+    expectedAttempts: number
+  ): Promise<void> {
     await this.query(
-      `UPDATE flash_jobs SET last_error = $3, next_attempt_at = $4 WHERE flash_id = $1 AND stage = $2`,
-      [flashId, stage, error, new Date(retryAtMs)]
+      `UPDATE flash_jobs SET last_error = $3, next_attempt_at = $4
+       WHERE flash_id = $1 AND stage = $2 AND attempts = $5`,
+      [flashId, stage, error, new Date(retryAtMs), expectedAttempts]
     );
   }
 
   // TransientError contract: a transient failure must not consume an attempt,
   // so undo the increment claim() already applied for this attempt.
-  async defer(flashId: number, stage: FlashJobStage, retryAtMs: number): Promise<void> {
+  async defer(flashId: number, stage: FlashJobStage, retryAtMs: number, expectedAttempts: number): Promise<void> {
     await this.query(
       `UPDATE flash_jobs
        SET attempts = GREATEST(attempts - 1, 0), next_attempt_at = $3
-       WHERE flash_id = $1 AND stage = $2`,
-      [flashId, stage, new Date(retryAtMs)]
+       WHERE flash_id = $1 AND stage = $2 AND attempts = $4`,
+      [flashId, stage, new Date(retryAtMs), expectedAttempts]
     );
   }
 }

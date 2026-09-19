@@ -12,6 +12,7 @@ import type { FlashReceivedPayload } from "@flashcastr/shared-types";
 import SpaceInvadersAPI, { type FlashInvaderFlash } from "./space-invaders-api.js";
 import { loadRegisteredPlayers } from "./users-loader.js";
 import { loadRecentFlashIds } from "./seed-loader.js";
+import { RecentFlashCache } from "./recent-flash-cache.js";
 
 const log = createLogger("flash-engine");
 const registry = createMetricsRegistry("flash-engine");
@@ -60,7 +61,7 @@ const OFF_PEAK_SKIP_CHANCE = 0.5;
 const USERS_REFRESH_SCHEDULE = "*/5 * * * *";
 const USERS_REFRESH_INTERVAL_MS = 5 * 60_000;
 
-const recentFlashIds = new Set<number>();
+const recentFlashCache = new RecentFlashCache(MAX_CACHE_SIZE);
 let lastFlashCountValue: string | null = null;
 let consecutiveNoChanges = 0;
 let registeredPlayers = new Set<string>();
@@ -99,17 +100,8 @@ function isPeakFlashTime(): boolean {
   return hour >= PEAK_START_HOUR && hour < PEAK_END_HOUR;
 }
 
-function rememberFlash(flashId: number): void {
-  recentFlashIds.add(flashId);
-  if (recentFlashIds.size <= MAX_CACHE_SIZE) return;
-  const iterator = recentFlashIds.values();
-  for (let i = 0; i < MAX_CACHE_SIZE / 2; i++) {
-    recentFlashIds.delete(iterator.next().value!);
-  }
-}
-
 async function publishFlash(flash: FlashInvaderFlash): Promise<boolean> {
-  if (recentFlashIds.has(flash.flash_id)) return false;
+  if (recentFlashCache.has(flash.flash_id)) return false;
 
   const payload: FlashReceivedPayload = {
     flash_id: flash.flash_id,
@@ -123,7 +115,7 @@ async function publishFlash(flash: FlashInvaderFlash): Promise<boolean> {
 
   try {
     await publisher.publish(ROUTING_KEYS.FLASH_RECEIVED, payload);
-    rememberFlash(flash.flash_id);
+    recentFlashCache.remember(flash.flash_id);
     return true;
   } catch (err) {
     log.error(`Failed to publish flash ${flash.flash_id}:`, err);
@@ -185,11 +177,11 @@ async function fetchAndPublish(): Promise<void> {
   }
 
   for (const flash of flashes.with_paris) {
-    if (recentFlashIds.has(flash.flash_id)) continue;
+    if (recentFlashCache.has(flash.flash_id)) continue;
 
     if (!registeredPlayers.has(flash.player.toLowerCase())) {
       parisFilteredCount++;
-      rememberFlash(flash.flash_id);
+      recentFlashCache.remember(flash.flash_id);
       continue;
     }
 
@@ -232,7 +224,7 @@ runService("flash-engine", {
     await refreshRegisteredPlayers();
 
     const seededFlashIds = await loadRecentFlashIds(flashesDb, MAX_CACHE_SIZE);
-    for (const flashId of seededFlashIds) recentFlashIds.add(flashId);
+    recentFlashCache.seed(seededFlashIds);
     log.info(`seeded ${seededFlashIds.size} known flashes`);
 
     fetchAndPublish().catch((err) => log.error("Initial fetch failed:", err));

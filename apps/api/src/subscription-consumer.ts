@@ -12,7 +12,11 @@ const SUBSCRIPTION_PREFETCH = 10;
  */
 export class SubscriptionConsumer extends FlashcastrConsumer<unknown> {
   constructor(rabbitUrl: string) {
-    super("api", QUEUES.API_SUBSCRIPTIONS, { rabbitUrl, prefetch: SUBSCRIPTION_PREFETCH });
+    super("api", QUEUES.API_SUBSCRIPTIONS, {
+      rabbitUrl,
+      prefetch: SUBSCRIPTION_PREFETCH,
+      exclusive: { bindings: [ROUTING_KEYS.FLASH_STORED, ROUTING_KEYS.FLASH_CASTED] },
+    });
   }
 
   protected async handleMessage(envelope: MessageEnvelope<unknown>, _raw: ConsumeMessage): Promise<void> {

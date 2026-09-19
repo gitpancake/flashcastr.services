@@ -57,14 +57,27 @@ export class FlashCaster {
       return null;
     }
 
+    const shouldAttemptCast = Boolean(appUser.auto_cast && payload.ipfs_cid && payload.ipfs_cid.trim() !== "");
+    if (appUser.auto_cast && !shouldAttemptCast) {
+      log.warn(`Skipping auto-cast for flash ${payload.flash_id} — no IPFS CID`);
+      return null;
+    }
+
+    // Claim the row (cast_hash NULL) before ever attempting to cast, so a redelivery after
+    // an insert failure never re-publishes: getByFlashIds will see the claim on retry.
+    if (existing.length === 0) {
+      const doc: FlashcastrFlash = {
+        flash_id: payload.flash_id,
+        user_fid: appUser.fid,
+        user_pfp_url: neynarUser.pfpUrl,
+        user_username: neynarUser.username,
+        cast_hash: null,
+      };
+      await this.flashes.insertMany([doc]);
+    }
+
     let castHash: string | null = null;
-
-    if (appUser.auto_cast) {
-      if (!payload.ipfs_cid || payload.ipfs_cid.trim() === "") {
-        log.warn(`Skipping auto-cast for flash ${payload.flash_id} — no IPFS CID`);
-        return null;
-      }
-
+    if (shouldAttemptCast) {
       try {
         const signerUuid = this.decrypt(appUser.signer_uuid, this.signerEncryptionKey);
         const cast = await this.gateway.publishCast(signerUuid, payload.flash_id, payload.city);
@@ -76,17 +89,7 @@ export class FlashCaster {
       }
     }
 
-    const doc: FlashcastrFlash = {
-      flash_id: payload.flash_id,
-      user_fid: appUser.fid,
-      user_pfp_url: neynarUser.pfpUrl,
-      user_username: neynarUser.username,
-      cast_hash: castHash,
-    };
-
-    if (existing.length === 0) {
-      await this.flashes.insertMany([doc]);
-    } else if (castHash) {
+    if (castHash) {
       await this.flashes.updateCastHash(payload.flash_id, castHash);
     }
 

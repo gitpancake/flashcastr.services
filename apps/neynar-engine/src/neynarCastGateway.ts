@@ -1,6 +1,7 @@
 import { NeynarAPIClient } from "@neynar/nodejs-sdk";
 import type { PostCastReqBodyEmbeds } from "@neynar/nodejs-sdk/build/api/index.js";
 import type { AxiosError } from "axios";
+import { buildCastIdemKey } from "./castGateway.js";
 import type { CastGateway, CastUser, PublishedCast, SignerStatus } from "./castGateway.js";
 
 const CAST_CHANNEL_ID = "invaders";
@@ -11,6 +12,7 @@ export function buildFlashCast(signerUuid: string, flashId: number, city: string
     text: `I just flashed an Invader in ${city}! 👾`,
     embeds: [{ url: `https://www.flashcastr.app/flash/${flashId}` } as PostCastReqBodyEmbeds],
     channelId: CAST_CHANNEL_ID,
+    idem: buildCastIdemKey(flashId),
   };
 }
 

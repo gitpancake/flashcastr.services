@@ -36,11 +36,6 @@ export const typeDefs = `#graphql
     message: String!
   }
 
-  type SignupResponse {
-    success: Boolean!
-    message: String!
-  }
-
   type InitiateSignupResponse {
     signer_uuid: String!
     public_key: String!
@@ -143,7 +138,7 @@ export const typeDefs = `#graphql
     globalFlashes(page: Int, limit: Int, city: String, player: String): [Flash!]!
     globalFlash(flash_id: String!): Flash
     flash(id: Int!): FlashcastrFlash
-    flashesSummary(fid: Int!, page: Int, limit: Int): FlashesSummary!
+    flashesSummary(fid: Int!): FlashesSummary!
     allFlashesPlayers(username: String): [String!]!
     getAllCities: [String!]!
     getTrendingCities(excludeParis: Boolean = true, hours: Int = 6): [TrendingCity!]!
@@ -160,7 +155,6 @@ export const typeDefs = `#graphql
   type Mutation {
     setUserAutoCast(fid: Int!, auto_cast: Boolean!): User!
     deleteUser(fid: Int!): DeleteUserResponse!
-    signup(fid: Int!, signer_uuid: String!, username: String!): SignupResponse!
     initiateSignup(username: String!): InitiateSignupResponse!
     saveFlashIdentification(source_ipfs_cid: String!, matched_flash_id: String!, matched_flash_name: String, similarity: Float!, confidence: Float!): FlashIdentificationInfo
   }

@@ -76,6 +76,12 @@ export const totalFlashesCount = new Gauge({
   registers: [registry],
 });
 
+export const activeSubscriptionsTotal = new Gauge({
+  name: "flashcastr_api_active_subscriptions_total",
+  help: "Active GraphQL WebSocket subscriptions",
+  registers: [registry],
+});
+
 // ============================================
 // HISTOGRAMS
 // ============================================

@@ -63,7 +63,7 @@ export function createUserResolvers(pool: Pool) {
             ok: false,
             status: "NEYNAR_LOOKUP_ERROR",
             fid: args.fid,
-            message: error instanceof Error ? error.message : "Neynar lookup failed.",
+            message: "Failed to check signer status.",
           };
         }
       },
@@ -102,7 +102,7 @@ export function createUserResolvers(pool: Pool) {
                 status: "ERROR_FINALIZATION",
                 fid: neynarSigner.fid,
                 user: null,
-                message: finalizationError instanceof Error ? finalizationError.message : "Failed to finalize user signup.",
+                message: "Failed to finalize user signup.",
               };
             }
           } else if (neynarSigner.status === "pending_approval") {
@@ -122,7 +122,7 @@ export function createUserResolvers(pool: Pool) {
           return {
             status: "ERROR_NEYNAR_LOOKUP",
             fid: null, user: null,
-            message: error instanceof Error ? error.message : "Failed to lookup signer on Neynar.",
+            message: "Failed to lookup signer on Neynar.",
           };
         }
       },
@@ -150,10 +150,6 @@ export function createUserResolvers(pool: Pool) {
 
         return { success: true, message: "User deleted successfully" };
       }),
-
-      signup: async () => {
-        return { success: true, message: "Old signup mutation called (currently no-op)." };
-      },
 
       initiateSignup: withRateLimit("initiateSignup", signupLimiter, async (_: unknown, args: { username: string }) => {
         if (!args.username) {

@@ -23,14 +23,13 @@ import { InMemoryPubSub } from "./pubsub.js";
 import { SubscriptionConsumer } from "./subscription-consumer.js";
 import { createSubscriptionMetricsHooks } from "./subscription-metrics.js";
 import { shutdownTracing } from "./tracing.js";
+import { scheduleGaugeUpdates } from "./gauges.js";
 import {
   registry,
   startMetricsServer,
   graphqlRequestsTotal,
   graphqlErrorsTotal,
   graphqlDurationSeconds,
-  activeUsersTotal,
-  totalFlashesCount,
 } from "./metrics.js";
 
 const log = createLogger("api");
@@ -114,19 +113,6 @@ const server = new ApolloServer({
   ],
 });
 
-// Update user and flash counts periodically
-async function updateGauges() {
-  try {
-    const userResult = await pool.query("SELECT COUNT(*)::int as count FROM flashcastr_users");
-    activeUsersTotal.set(userResult.rows[0]?.count ?? 0);
-
-    const flashResult = await pool.query("SELECT COUNT(*)::int as count FROM flashcastr_flashes");
-    totalFlashesCount.set(flashResult.rows[0]?.count ?? 0);
-  } catch (error) {
-    log.error("Error updating gauges:", error);
-  }
-}
-
 async function startSubscriptionConsumer(pubsub: PubSubEngine): Promise<SubscriptionConsumer | null> {
   if (!RABBITMQ_URL) {
     log.warn("RABBITMQ_URL not set, subscriptions will not receive live events");
@@ -169,8 +155,7 @@ async function main() {
 
   startMetricsServer(registry, METRICS_PORT);
 
-  setInterval(updateGauges, 60000);
-  updateGauges();
+  scheduleGaugeUpdates(pool, log);
 
   const subscriptionConsumer = await startSubscriptionConsumer(pubsub);
 

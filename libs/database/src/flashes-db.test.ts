@@ -127,4 +127,17 @@ describe("PostgresFlashesDb.writeMany", () => {
     expect(ipfsCids).toEqual([""]);
     expect(players).toEqual(["player-new"]);
   });
+
+  it("queries the passed transaction client instead of the instance's own pool", async () => {
+    const pool = new FakeWriteManyPool();
+    const client = new FakeWriteManyPool();
+    const db = new PostgresFlashesDb(pool as unknown as Pool);
+
+    await db.writeMany([makeFlash({ flash_id: 111, ipfs_cid: "bafy123" })], client as unknown as Pool);
+
+    expect(pool.capturedParams).toEqual([]);
+    const { flashIds, ipfsCids } = captureUnnestParams(client);
+    expect(flashIds).toEqual([111]);
+    expect(ipfsCids).toEqual(["bafy123"]);
+  });
 });

@@ -4,7 +4,7 @@ import type { ConsumeMessage } from "amqplib";
 const amqp = vi.hoisted(() => {
   const channel = {
     assertExchange: vi.fn(async () => ({})),
-    assertQueue: vi.fn(async () => ({})),
+    assertQueue: vi.fn(async (name: string) => (name === "" ? { queue: "amq.gen-test" } : {})),
     bindQueue: vi.fn(async () => ({})),
     prefetch: vi.fn(async () => ({})),
     checkQueue: vi.fn(async (queue: string) => ({ queue, messageCount: queue === "flashcastr.dead-letters" ? 3 : 7, consumerCount: 1 })),
@@ -61,6 +61,21 @@ class TestConsumer extends FlashcastrConsumer<Payload> {
   }
 }
 
+class ExclusiveTestConsumer extends FlashcastrConsumer<Payload> {
+  handler = vi.fn<(envelope: MessageEnvelope<Payload>, raw: ConsumeMessage) => Promise<void>>(async () => undefined);
+
+  constructor() {
+    super("test", "test.queue", {
+      rabbitUrl: "amqp://test",
+      exclusive: { bindings: ["flash.stored", "flash.casted"] },
+    });
+  }
+
+  protected handleMessage(envelope: MessageEnvelope<Payload>, raw: ConsumeMessage): Promise<void> {
+    return this.handler(envelope, raw);
+  }
+}
+
 function message(body: unknown, messageId = "m1"): ConsumeMessage {
   const content = Buffer.from(typeof body === "string" ? body : JSON.stringify(body));
   return {
@@ -78,7 +93,7 @@ async function settle(): Promise<void> {
   await vi.advanceTimersByTimeAsync(0);
 }
 
-async function start(consumer: TestConsumer): Promise<void> {
+async function start(consumer: TestConsumer | ExclusiveTestConsumer): Promise<void> {
   amqp.channel.consume.mockImplementation(async (_queue: string, onMessage: Delivered) => {
     deliver = onMessage;
     return { consumerTag: "tag-1" };
@@ -238,5 +253,16 @@ describe("FlashcastrConsumer", () => {
     const consumer = new TestConsumer();
     await start(consumer);
     await expect(consumer.queueDepths()).resolves.toEqual({ queue: 7, deadLetters: 3 });
+  });
+
+  it("connects to a server-named exclusive queue and binds it when exclusive option is set", async () => {
+    const consumer = new ExclusiveTestConsumer();
+    await start(consumer);
+
+    expect(amqp.channel.assertQueue).toHaveBeenCalledWith("", { exclusive: true, autoDelete: true });
+    expect(amqp.channel.bindQueue).toHaveBeenCalledWith("amq.gen-test", "flashcastr.events", "flash.stored");
+    expect(amqp.channel.bindQueue).toHaveBeenCalledWith("amq.gen-test", "flashcastr.events", "flash.casted");
+    expect(amqp.channel.consume).toHaveBeenCalledWith("amq.gen-test", expect.any(Function), { noAck: false });
+    expect(consumer.queueName).toBe("amq.gen-test");
   });
 });

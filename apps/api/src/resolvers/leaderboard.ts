@@ -56,9 +56,8 @@ export function createLeaderboardResolvers(pool: Pool) {
           COUNT(ff.flash_id)::int as flash_count,
           COUNT(DISTINCT f.city)::int as city_count
         FROM flashcastr_users u
-        LEFT JOIN flashcastr_flashes ff ON ff.user_fid = u.fid AND ff.deleted = false
+        LEFT JOIN flashcastr_flashes ff ON ff.user_fid = u.fid
         LEFT JOIN flashes f ON f.flash_id = ff.flash_id
-        WHERE u.deleted = false
         GROUP BY u.fid
         ORDER BY flash_count DESC, city_count DESC
         LIMIT $1

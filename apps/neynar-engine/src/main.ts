@@ -205,7 +205,7 @@ async function retryFailedCasts(): Promise<void> {
 // Check signer statuses on startup
 async function checkSignerStatuses(): Promise<void> {
   try {
-    const users = await flashcastrUsersDb.getAllActive();
+    const users = await flashcastrUsersDb.getAll();
     const autoCastUsers = users.filter((u) => u.auto_cast);
 
     if (autoCastUsers.length === 0) {

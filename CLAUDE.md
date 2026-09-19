@@ -67,12 +67,12 @@ Envelope: `MessageEnvelope<T>` (`id`, `correlationId`, `source`, `type`, `versio
 
 | Table | Notes |
 |-------|-------|
-| `flashes` | upsert on `flash_id`, `ipfs_cid` only ever overwritten with a non-empty value |
-| `flashcastr_flashes` | `cast_hash NULL` = pending retry; has `deleted` |
+| `flashes` | upsert on `flash_id`, `ipfs_cid` only ever overwritten with a non-empty value. Surviving indexes (post `0005_flashes_index_diet.sql`): `flashes_pkey` (flash_id), `idx_flashes_timestamp` (unfiltered list, cities' `timestamp >=` range), `idx_flashes_city` (`getAllCities`' `SELECT DISTINCT city`), `idx_flashes_player_timestamp` (`lower(player)`, for `WhereBuilder.eqIgnoreCase`), `idx_flashes_city_timestamp` (`lower(city)`, ditto) |
+| `flashcastr_flashes` | `cast_hash NULL` = pending retry; has `deleted`. Surviving indexes: `flashcastr_flashes_pkey` (id), `unique_flash_id` (flash_id, the join target from `flashes`), `idx_flashcastr_flashes_user_fid` |
 | `flashcastr_users` | encrypted `signer_uuid` (AES-256-GCM, `SIGNER_ENCRYPTION_KEY`), `auto_cast`, `deleted`. Deletes are hard (`deleteWithFlashes` transaction); `deleted=false` filters are legacy but kept everywhere |
 | `flash_identifications` | upsert on `source_ipfs_cid` |
 
-No schema source in repo; tables pre-exist in Railway Postgres.
+Schema source lives in `migrations/` (see README "Local database"); it documents what's applied in Railway Postgres, not a fresh-install source of truth.
 
 ## Deployment
 
@@ -95,3 +95,4 @@ See `.env.example`. Hardening knobs: `API_KEY`, `TRUST_PROXY_HOPS`, `RATE_LIMIT_
 - Prometheus `operation_name` label is the schema root field, not the client operation name.
 - esbuild's CJS interop shim for `dotenv`'s internal `require("fs")` throws `Dynamic require of "fs" is not supported` under plain `--format=esm` output; the Docker builder stages carry a `--banner:js` injecting `createRequire(import.meta.url)` to fix it. Any new bundled app needs the same banner.
 - `migrations/0003_flash_identifications_unique.sql` replaces the non-unique `idx_flash_identifications_source` with a unique index (dedupes existing rows first, keeping the newest `created_at`) so `FlashIdentificationsDb.upsert`'s `ON CONFLICT (source_ipfs_cid)` has a matching target — it 500'd on every call before this. `npm run migrate -- --baseline` now requires an explicit upper-bound filename (see README "Local database"); the old no-argument form silently baselined everything pending.
+- The migrator runs each file in one transaction, and Postgres holds every lock acquired in it until COMMIT regardless of statement order. `DROP INDEX` takes ACCESS EXCLUSIVE (blocks reads+writes); plain `CREATE INDEX` only takes SHARE (blocks writes only). A migration combining both (see `0005_flashes_index_diet.sql`) must build/`ANALYZE` first and drop last, or the DROP's ACCESS EXCLUSIVE lock sits for the whole build instead of milliseconds. Reusing a to-be-dropped index's name needs a throwaway name + `ALTER INDEX ... RENAME` at the end (fast, catalog-only) since you can't `CREATE` under a name that still exists.

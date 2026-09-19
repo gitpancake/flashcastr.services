@@ -16,3 +16,7 @@ export interface CastGateway {
   publishCast(signerUuid: string, flashId: number, city: string): Promise<PublishedCast>;
   lookupSigner(signerUuid: string): Promise<SignerStatus>;
 }
+
+export function buildCastIdemKey(flashId: number): string {
+  return `flash-${flashId}`;
+}

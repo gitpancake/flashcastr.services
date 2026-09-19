@@ -144,6 +144,44 @@ describe("FlashCaster.handle", () => {
     ]);
     expect(result).toMatchObject({ cast_hash: null, auto_cast: true });
   });
+
+  it("claims the row before attempting to publish the cast", async () => {
+    const flashes = buildFlashesDb({
+      insertMany: vi.fn(async () => {
+        throw new Error("DB blip");
+      }),
+    });
+    const users = buildUsersDb({ getByUsername: vi.fn(async () => buildUser({ auto_cast: true })) });
+    const gateway = buildGateway();
+    const flashCaster = buildFlashCaster({ users, flashes, gateway });
+
+    await expect(flashCaster.handle(buildPayload())).rejects.toThrow("DB blip");
+
+    expect(gateway.publishCast).not.toHaveBeenCalled();
+  });
+
+  it("attempts publishCast again on redelivery when the cast hash was never persisted", async () => {
+    const flashes = buildFlashesDb({
+      updateCastHash: vi.fn(async () => {
+        throw new Error("DB blip");
+      }),
+    });
+    const users = buildUsersDb({ getByUsername: vi.fn(async () => buildUser({ auto_cast: true })) });
+    const gateway = buildGateway();
+    const flashCaster = buildFlashCaster({ users, flashes, gateway });
+
+    await expect(flashCaster.handle(buildPayload())).rejects.toThrow("DB blip");
+
+    flashes.getByFlashIds = vi.fn(async () => [
+      { flash_id: 1, user_fid: 42, user_username: "alice", user_pfp_url: "pfp.png", cast_hash: null },
+    ]);
+
+    await expect(flashCaster.handle(buildPayload())).rejects.toThrow("DB blip");
+
+    expect(gateway.publishCast).toHaveBeenCalledTimes(2);
+    expect(gateway.publishCast).toHaveBeenNthCalledWith(1, "encrypted-signer", 1, "Paris");
+    expect(gateway.publishCast).toHaveBeenNthCalledWith(2, "encrypted-signer", 1, "Paris");
+  });
 });
 
 describe("FlashCaster.retryFailedCasts", () => {

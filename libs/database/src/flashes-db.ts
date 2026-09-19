@@ -1,4 +1,4 @@
-import { Pool } from "pg";
+import { Pool, PoolClient } from "pg";
 import type { Flash } from "@flashcastr/shared-types";
 import { Postgres } from "./postgres-base.js";
 
@@ -32,7 +32,7 @@ export class PostgresFlashesDb extends Postgres<Flash> {
     return await this.query(sql, flashIds);
   }
 
-  async writeMany(flashes: Flash[]): Promise<Flash[]> {
+  async writeMany(flashes: Flash[], client: Pool | PoolClient = this.pool): Promise<Flash[]> {
     if (!flashes.length) return [];
 
     const validFlashes: Flash[] = [];
@@ -76,12 +76,13 @@ export class PostgresFlashesDb extends Postgres<Flash> {
     `;
 
     try {
-      return await this.query(sql, [
+      const result = await client.query(sql, [
         flashIds, cities, players, imgs, ipfsCids, texts, timestamps, flashCounts,
       ]);
+      return result.rows;
     } catch (error) {
       console.error(`[PostgresFlashesDb] Batch insert failed:`, error);
-      return await this.insertIndividually(dedupedFlashes);
+      return await this.insertIndividually(dedupedFlashes, client);
     }
   }
 
@@ -156,7 +157,7 @@ export class PostgresFlashesDb extends Postgres<Flash> {
     return rows.map((r) => r.flash_id);
   }
 
-  private async insertIndividually(flashes: Flash[]): Promise<Flash[]> {
+  private async insertIndividually(flashes: Flash[], client: Pool | PoolClient = this.pool): Promise<Flash[]> {
     const successful: Flash[] = [];
     for (const flash of flashes) {
       try {
@@ -168,11 +169,11 @@ export class PostgresFlashesDb extends Postgres<Flash> {
             ipfs_cid = COALESCE(NULLIF(EXCLUDED.ipfs_cid, ''), flashes.ipfs_cid)
           RETURNING *;
         `;
-        const result = await this.query(sql, [
+        const result = await client.query(sql, [
           flash.flash_id, flash.city, flash.player, flash.img,
           flash.ipfs_cid, flash.text, new Date(flash.timestamp * 1000), flash.flash_count,
         ]);
-        if (result.length > 0) successful.push(result[0]);
+        if (result.rows.length > 0) successful.push(result.rows[0]);
       } catch (error) {
         console.error(
           `[PostgresFlashesDb] Individual insert failed for flash ${flash.flash_id}:`,

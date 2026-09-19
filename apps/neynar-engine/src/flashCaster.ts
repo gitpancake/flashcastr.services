@@ -1,14 +1,29 @@
 import type { FailedCastRow, FlashcastrFlashesDb, FlashcastrUsersDb } from "@flashcastr/database";
 import { createLogger } from "@flashcastr/logger";
 import type { Counter } from "@flashcastr/metrics";
-import type { FlashCastedPayload, FlashcastrFlash, FlashStoredPayload } from "@flashcastr/shared-types";
+import type { FlashCastedPayload, FlashcastrFlash } from "@flashcastr/shared-types";
 import type { CastGateway } from "./castGateway.js";
 
 const log = createLogger("neynar-engine");
 
+const PINATA_GATEWAY = "https://gateway.pinata.cloud/ipfs";
+
 function isSignerRevokedError(err: unknown): boolean {
   const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
   return message.includes("revoked") || message.includes("403") || message.includes("forbidden");
+}
+
+// Joined flash row a caller hands FlashCaster.handle — a structural subset shared by
+// both the RabbitMQ FlashStoredPayload path and the Postgres cast-job (ClaimedFlashJob) path.
+export interface CastableFlash {
+  flash_id: number;
+  city: string;
+  player: string;
+  img: string;
+  ipfs_cid: string;
+  text: string;
+  timestamp: number; // unix seconds
+  flash_count: string;
 }
 
 export interface FlashCasterOptions {
@@ -37,11 +52,11 @@ export class FlashCaster {
     this.castsPublished = options.castsPublished;
   }
 
-  async handle(payload: FlashStoredPayload): Promise<FlashCastedPayload | null> {
-    const appUser = await this.users.getByUsername(payload.player);
+  async handle(flash: CastableFlash): Promise<FlashCastedPayload | null> {
+    const appUser = await this.users.getByUsername(flash.player);
     if (!appUser) return null;
 
-    const existing = await this.flashes.getByFlashIds([payload.flash_id]);
+    const existing = await this.flashes.getByFlashIds([flash.flash_id]);
     if (existing.length > 0 && existing[0].cast_hash) return null;
 
     let neynarUser;
@@ -57,9 +72,9 @@ export class FlashCaster {
       return null;
     }
 
-    const shouldAttemptCast = Boolean(appUser.auto_cast && payload.ipfs_cid && payload.ipfs_cid.trim() !== "");
+    const shouldAttemptCast = Boolean(appUser.auto_cast && flash.ipfs_cid && flash.ipfs_cid.trim() !== "");
     if (appUser.auto_cast && !shouldAttemptCast) {
-      log.warn(`Skipping auto-cast for flash ${payload.flash_id} — no IPFS CID`);
+      log.warn(`Skipping auto-cast for flash ${flash.flash_id} — no IPFS CID`);
       return null;
     }
 
@@ -67,7 +82,7 @@ export class FlashCaster {
     // an insert failure never re-publishes: getByFlashIds will see the claim on retry.
     if (existing.length === 0) {
       const doc: FlashcastrFlash = {
-        flash_id: payload.flash_id,
+        flash_id: flash.flash_id,
         user_fid: appUser.fid,
         user_pfp_url: neynarUser.pfpUrl,
         user_username: neynarUser.username,
@@ -80,21 +95,31 @@ export class FlashCaster {
     if (shouldAttemptCast) {
       try {
         const signerUuid = this.decrypt(appUser.signer_uuid, this.signerEncryptionKey);
-        const cast = await this.gateway.publishCast(signerUuid, payload.flash_id, payload.city);
+        const cast = await this.gateway.publishCast(signerUuid, flash.flash_id, flash.city);
         castHash = cast.hash;
         this.castsPublished?.inc();
-        log.info(`Cast published for flash ${payload.flash_id}: ${castHash}`);
+        log.info(`Cast published for flash ${flash.flash_id}: ${castHash}`);
       } catch (err) {
-        log.error(`Failed to cast flash ${payload.flash_id}: ${(err as Error).message}`);
+        log.error(`Failed to cast flash ${flash.flash_id}: ${(err as Error).message}`);
       }
     }
 
     if (castHash) {
-      await this.flashes.updateCastHash(payload.flash_id, castHash);
+      await this.flashes.updateCastHash(flash.flash_id, castHash);
     }
 
     return {
-      ...payload,
+      flash_id: flash.flash_id,
+      img: flash.img,
+      city: flash.city,
+      text: flash.text,
+      player: flash.player,
+      timestamp: flash.timestamp,
+      flash_count: flash.flash_count,
+      ipfs_cid: flash.ipfs_cid,
+      ipfs_url: flash.ipfs_cid ? `${PINATA_GATEWAY}/${flash.ipfs_cid}` : "",
+      db_flash_id: flash.flash_id,
+      stored_at: Date.now(),
       cast_hash: castHash,
       user_fid: appUser.fid,
       user_username: neynarUser.username,

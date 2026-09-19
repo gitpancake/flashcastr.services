@@ -1,5 +1,20 @@
 import type { Pool, PoolClient } from "pg";
 
+export async function withTransaction<R>(pool: Pool, work: (client: PoolClient) => Promise<R>): Promise<R> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await work(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 export abstract class Postgres<T = unknown> {
   constructor(protected pool: Pool) {}
 
@@ -13,18 +28,7 @@ export abstract class Postgres<T = unknown> {
     return res.rows[0] ?? null;
   }
 
-  protected async transaction<R>(work: (client: PoolClient) => Promise<R>): Promise<R> {
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN");
-      const result = await work(client);
-      await client.query("COMMIT");
-      return result;
-    } catch (err) {
-      await client.query("ROLLBACK").catch(() => undefined);
-      throw err;
-    } finally {
-      client.release();
-    }
+  protected transaction<R>(work: (client: PoolClient) => Promise<R>): Promise<R> {
+    return withTransaction(this.pool, work);
   }
 }

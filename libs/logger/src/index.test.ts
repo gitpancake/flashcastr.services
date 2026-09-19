@@ -80,6 +80,39 @@ describe("createLogger", () => {
     }
   });
 
+  it("serializes an Error nested under a non-err key on a merged object", () => {
+    const { chunks, destination } = captureLines();
+    const log = createLogger("api", destination);
+
+    log.error("signup failed", { cause: new Error("inner") });
+
+    const [line] = parseLines(chunks);
+    const cause = line.cause as { message: string };
+    expect(cause.message).toBe("inner");
+  });
+
+  it("uses the exact old lowercase level labels for warn and error", () => {
+    const { chunks, destination } = captureLines();
+    const log = createLogger("api", destination);
+
+    log.warn("careful");
+    log.error("broken");
+
+    const [warnLine, errorLine] = parseLines(chunks);
+    expect(warnLine.level).toBe("warn");
+    expect(errorLine.level).toBe("error");
+  });
+
+  it("joins multiple plain args into msg with a space, like the old formatLogArgs", () => {
+    const { chunks, destination } = captureLines();
+    const log = createLogger("api", destination);
+
+    log.info("a", 1, null);
+
+    const [line] = parseLines(chunks);
+    expect(line.msg).toBe("a 1 null");
+  });
+
   it("does not throw on a circular-reference object arg", () => {
     const { destination } = captureLines();
     const log = createLogger("api", destination);

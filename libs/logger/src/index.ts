@@ -29,16 +29,9 @@ interface LokiDestination {
   flush(): Promise<void>;
 }
 
-let lokiDestination: LokiDestination | null | undefined;
-
-function resolveLokiDestination(): LokiDestination | null {
-  if (lokiDestination !== undefined) return lokiDestination;
-
+function createLokiDestination(): LokiDestination | null {
   const raw = getLokiUrl();
-  if (!raw) {
-    lokiDestination = null;
-    return null;
-  }
+  if (!raw) return null;
 
   const { host, basicAuth } = parseLokiUrl(raw);
   const stream = pinoLoki({
@@ -48,11 +41,19 @@ function resolveLokiDestination(): LokiDestination | null {
     batching: { interval: 2 },
   });
 
-  lokiDestination = {
+  return {
     stream,
     flush: () => new Promise((resolve) => stream.end(() => resolve())),
   };
-  return lokiDestination;
+}
+
+function serializeErrorValues(obj: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(obj).map(([key, value]) => [
+      key,
+      value instanceof Error ? { message: value.message, stack: value.stack } : value,
+    ])
+  );
 }
 
 function toPinoArgs(args: unknown[]): [Record<string, unknown> | undefined, string] {
@@ -63,7 +64,7 @@ function toPinoArgs(args: unknown[]): [Record<string, unknown> | undefined, stri
     if (arg instanceof Error) {
       mergingObject = { ...mergingObject, err: arg };
     } else if (arg !== null && typeof arg === "object") {
-      mergingObject = { ...mergingObject, ...arg };
+      mergingObject = { ...mergingObject, ...serializeErrorValues(arg as Record<string, unknown>) };
     } else {
       messageParts.push(String(arg));
     }
@@ -73,7 +74,12 @@ function toPinoArgs(args: unknown[]): [Record<string, unknown> | undefined, stri
 }
 
 export function createLogger(serviceName: string, destination?: pino.DestinationStream) {
-  const loki = destination ? null : resolveLokiDestination();
+  // Each logger gets its own Loki stream (not a shared/memoized one): flush()
+  // ends the stream, and a process can have multiple independent loggers
+  // (e.g. api's main.ts and server.ts) whose exit paths aren't coordinated —
+  // sharing one stream would let one logger's flush silently kill another's
+  // still-in-flight writes.
+  const loki = destination ? null : createLokiDestination();
   const pinoLogger = pino(
     {
       level: process.env.LOG_LEVEL || "info",

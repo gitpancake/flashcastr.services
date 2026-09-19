@@ -1,4 +1,7 @@
 import { Pool } from "pg";
+import { createLogger } from "@flashcastr/logger";
+
+const log = createLogger("database");
 
 let pool: Pool | null = null;
 
@@ -16,7 +19,7 @@ export function createPool(): Pool {
   });
 
   pool.on("error", (err) => {
-    console.error("[Database] Unexpected pool error:", err.message);
+    log.error("[Database] Unexpected pool error:", err.message);
   });
 
   return pool;

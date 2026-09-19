@@ -1,8 +1,10 @@
 import { connect, type ChannelModel, type Channel, type ConsumeMessage } from "amqplib";
+import type { Registry } from "prom-client";
 import type { MessageEnvelope } from "@flashcastr/shared-types";
 import { createLogger, type Logger } from "@flashcastr/logger";
 import { setupTopology, QUEUES, EXCHANGES } from "./topology.js";
 import { FatalMessageError, TransientError } from "./errors.js";
+import { withMetrics, type ConsumerMetrics } from "./metrics.js";
 
 export interface ConsumerOptions {
   /** Defaults to RABBITMQ_URL. */
@@ -17,6 +19,8 @@ export interface ConsumerOptions {
   manualAck?: boolean;
   /** Declares a server-named exclusive, auto-delete queue bound to these routing keys instead of the fixed durable queue. */
   exclusive?: { bindings: string[] };
+  /** When set, records processed/requeued/dead-lettered counters and a handleMessage duration histogram via withMetrics. */
+  registry?: Registry;
 }
 
 export interface QueueDepths {
@@ -73,6 +77,7 @@ export abstract class FlashcastrConsumer<T = unknown> {
   private readonly retryMaxDelayMs: number;
   private readonly manualAck: boolean;
   private readonly exclusive: { bindings: string[] } | undefined;
+  private readonly metrics: ConsumerMetrics | undefined;
   private consumingQueue: string;
 
   constructor(serviceName: string, queue: string, options: ConsumerOptions = {}) {
@@ -89,6 +94,7 @@ export abstract class FlashcastrConsumer<T = unknown> {
     this.retryMaxDelayMs = options.retryMaxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
     this.manualAck = options.manualAck ?? false;
     this.exclusive = options.exclusive;
+    this.metrics = options.registry ? withMetrics(options.registry, serviceName) : undefined;
   }
 
   protected abstract handleMessage(envelope: MessageEnvelope<T>, raw: ConsumeMessage): Promise<void>;
@@ -153,6 +159,8 @@ export abstract class FlashcastrConsumer<T = unknown> {
     } catch (err) {
       this.log.error("Failed to settle message:", err);
     }
+
+    this.metrics?.recordOutcome(outcome);
   }
 
   private recordAttempt(key: string): number {
@@ -182,10 +190,13 @@ export abstract class FlashcastrConsumer<T = unknown> {
     const key = raw.properties.messageId ?? envelope.id;
     this.messageKeys.set(raw, key);
 
+    const startedAt = performance.now();
     try {
       await this.handleMessage(envelope, raw);
+      this.metrics?.observeDuration((performance.now() - startedAt) / 1000);
       if (!this.manualAck) this.settle(raw, "ack");
     } catch (err) {
+      this.metrics?.observeDuration((performance.now() - startedAt) / 1000);
       await this.settleFailure(raw, key, err as Error);
     }
   }

@@ -47,16 +47,4 @@ export async function setupTopology(channel: Channel): Promise<void> {
     });
     await channel.bindQueue(queueName, EXCHANGES.EVENTS, routingKey);
   }
-
-  // API subscription queue — binds to multiple routing keys for live updates
-  await channel.assertQueue(QUEUES.API_SUBSCRIPTIONS, {
-    durable: true,
-    arguments: {
-      "x-dead-letter-exchange": EXCHANGES.DLX,
-      "x-dead-letter-routing-key": "api.subscriptions.dead",
-      "x-max-length": 10000,
-    },
-  });
-  await channel.bindQueue(QUEUES.API_SUBSCRIPTIONS, EXCHANGES.EVENTS, ROUTING_KEYS.FLASH_STORED);
-  await channel.bindQueue(QUEUES.API_SUBSCRIPTIONS, EXCHANGES.EVENTS, ROUTING_KEYS.FLASH_CASTED);
 }

@@ -1,7 +1,7 @@
 import { connect, type ChannelModel, type Channel, type ConsumeMessage } from "amqplib";
 import type { MessageEnvelope } from "@flashcastr/shared-types";
 import { createLogger, type Logger } from "@flashcastr/logger";
-import { setupTopology, QUEUES } from "./topology.js";
+import { setupTopology, QUEUES, EXCHANGES } from "./topology.js";
 import { FatalMessageError, TransientError } from "./errors.js";
 
 export interface ConsumerOptions {
@@ -15,6 +15,8 @@ export interface ConsumerOptions {
   retryMaxDelayMs?: number;
   /** When true the handler must call ack()/requeue()/deadLetter() itself. */
   manualAck?: boolean;
+  /** Declares a server-named exclusive, auto-delete queue bound to these routing keys instead of the fixed durable queue. */
+  exclusive?: { bindings: string[] };
 }
 
 export interface QueueDepths {
@@ -70,12 +72,15 @@ export abstract class FlashcastrConsumer<T = unknown> {
   private readonly retryBaseDelayMs: number;
   private readonly retryMaxDelayMs: number;
   private readonly manualAck: boolean;
+  private readonly exclusive: { bindings: string[] } | undefined;
+  private consumingQueue: string;
 
   constructor(serviceName: string, queue: string, options: ConsumerOptions = {}) {
     const rabbitUrl = options.rabbitUrl ?? process.env.RABBITMQ_URL;
     if (!rabbitUrl) throw new Error("RABBITMQ_URL is not defined");
     this.rabbitUrl = rabbitUrl;
     this.queue = queue;
+    this.consumingQueue = queue;
     this.serviceName = serviceName;
     this.log = createLogger(serviceName);
     this.prefetch = options.prefetch ?? intFromEnv("CONSUMER_CONCURRENCY", 1);
@@ -83,6 +88,7 @@ export abstract class FlashcastrConsumer<T = unknown> {
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
     this.retryMaxDelayMs = options.retryMaxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
     this.manualAck = options.manualAck ?? false;
+    this.exclusive = options.exclusive;
   }
 
   protected abstract handleMessage(envelope: MessageEnvelope<T>, raw: ConsumeMessage): Promise<void>;
@@ -96,7 +102,7 @@ export abstract class FlashcastrConsumer<T = unknown> {
   protected onReconnect(): void {}
 
   get queueName(): string {
-    return this.queue;
+    return this.consumingQueue;
   }
 
   isConsuming(): boolean {
@@ -107,7 +113,7 @@ export abstract class FlashcastrConsumer<T = unknown> {
     const channel = this.channel;
     if (!channel) return null;
     const [queue, deadLetters] = await Promise.all([
-      channel.checkQueue(this.queue),
+      channel.checkQueue(this.consumingQueue),
       channel.checkQueue(QUEUES.DEAD_LETTERS),
     ]);
     return { queue: queue.messageCount, deadLetters: deadLetters.messageCount };
@@ -312,6 +318,14 @@ export abstract class FlashcastrConsumer<T = unknown> {
     await setupTopology(channel);
     await channel.prefetch(this.prefetch);
 
+    if (this.exclusive) {
+      const { queue } = await channel.assertQueue("", { exclusive: true, autoDelete: true });
+      for (const bindingKey of this.exclusive.bindings) {
+        await channel.bindQueue(queue, EXCHANGES.EVENTS, bindingKey);
+      }
+      this.consumingQueue = queue;
+    }
+
     channel.on("error", (err) => {
       this.log.error("Channel error:", err.message);
     });
@@ -327,7 +341,7 @@ export abstract class FlashcastrConsumer<T = unknown> {
     });
 
     const consumer = await channel.consume(
-      this.queue,
+      this.consumingQueue,
       (msg) => {
         // amqplib delivers null when the broker cancels the consumer (queue deleted,
         // node failover). Swallowing it leaves us subscribed to nothing.
@@ -347,7 +361,7 @@ export abstract class FlashcastrConsumer<T = unknown> {
 
   async startConsuming(): Promise<void> {
     await this.connect();
-    this.log.info(`Consuming from ${this.queue} (concurrency=${this.prefetch}, maxAttempts=${this.maxAttempts})`);
+    this.log.info(`Consuming from ${this.consumingQueue} (concurrency=${this.prefetch}, maxAttempts=${this.maxAttempts})`);
   }
 
   async close(): Promise<void> {

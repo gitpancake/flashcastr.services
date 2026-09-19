@@ -18,6 +18,8 @@ import { createLogger, flushLogs } from "@flashcastr/logger";
 
 import { typeDefs } from "./schema.js";
 import { createResolvers } from "./resolvers/index.js";
+import type { PubSubEngine } from "./pubsub.js";
+import { InMemoryPubSub } from "./pubsub.js";
 import { SubscriptionConsumer } from "./subscription-consumer.js";
 import { shutdownTracing } from "./tracing.js";
 import {
@@ -50,9 +52,10 @@ function rootFieldName(requestContext: { operation?: { selectionSet: { selection
 }
 
 const pool = getPool();
+const pubsub = new InMemoryPubSub();
 
 // Build executable schema for WebSocket subscriptions
-const resolvers = createResolvers(pool);
+const resolvers = createResolvers(pool, pubsub);
 const schema = makeExecutableSchema({ typeDefs, resolvers });
 
 // Express + HTTP server
@@ -123,13 +126,13 @@ async function updateGauges() {
   }
 }
 
-async function startSubscriptionConsumer(): Promise<SubscriptionConsumer | null> {
+async function startSubscriptionConsumer(pubsub: PubSubEngine): Promise<SubscriptionConsumer | null> {
   if (!RABBITMQ_URL) {
     log.warn("RABBITMQ_URL not set, subscriptions will not receive live events");
     return null;
   }
 
-  const consumer = new SubscriptionConsumer(RABBITMQ_URL);
+  const consumer = new SubscriptionConsumer(RABBITMQ_URL, pubsub);
   try {
     await consumer.startConsuming();
     log.info("RabbitMQ subscription consumer started");
@@ -168,7 +171,7 @@ async function main() {
   setInterval(updateGauges, 60000);
   updateGauges();
 
-  const subscriptionConsumer = await startSubscriptionConsumer();
+  const subscriptionConsumer = await startSubscriptionConsumer(pubsub);
 
   app.get("/health", async (_req, res) => {
     const database = await databaseHealth();

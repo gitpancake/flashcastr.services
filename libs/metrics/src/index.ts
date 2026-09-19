@@ -1,6 +1,9 @@
 import { createServer } from "http";
 import { Registry, Counter, Gauge, Histogram, collectDefaultMetrics } from "prom-client";
 import { evaluateHealth, healthStatusCode, type HealthCheck } from "@flashcastr/health";
+import { createLogger } from "@flashcastr/logger";
+
+const log = createLogger("metrics");
 
 export function createMetricsRegistry(serviceName: string): Registry {
   const registry = new Registry();
@@ -36,7 +39,7 @@ export function startMetricsServer(registry: Registry, port: number, healthCheck
   });
 
   server.listen(port, () => {
-    console.log(`Metrics server listening on port ${port}`);
+    log.info(`Metrics server listening on port ${port}`);
   });
 }
 

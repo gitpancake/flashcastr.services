@@ -103,7 +103,7 @@ See `.env.example`. Hardening knobs: `API_KEY`, `TRUST_PROXY_HOPS`, `RATE_LIMIT_
 ## Gotchas
 
 - Frontend calls `initiateSignup`, `pollSignupStatus`, `saveFlashIdentification` from the browser with no key; never put `withApiKey` on them.
-- With `LOKI_URL` set, `createLogger` writes to the Loki stream only, not stdout: `railway logs` shows just the few `console.*` lines, and app logs are lost if Loki is down. Read app logs in Grafana/Loki until the logger tees to stdout.
+- `@flashcastr/logger` always writes to stdout (raw pino JSON lines, no pino-pretty) and additionally tees to Loki via `pino.multistream` when `LOKI_URL` is set — `railway logs` shows app output again regardless of Loki's availability. Railway rate-limits ingested logs at 500 lines/sec per replica (per-replica ceiling, not per-service); this pipeline runs well under it.
 - `getFid()` (api) is memoized per process; the developer mnemonic is only read there.
 - Neynar `PostCastReqBodyEmbeds` types every embed field as required; `buildFlashCast` casts a url-only embed.
 - Prometheus `operation_name` label is the schema root field, not the client operation name.

@@ -1,5 +1,8 @@
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { HttpProxyAgent } from "http-proxy-agent";
+import { createLogger } from "@flashcastr/logger";
+
+const log = createLogger("proxy");
 
 interface ProxyConfig {
   host: string;
@@ -39,9 +42,9 @@ export class ProxyRotator {
         (p) => p.host.includes("oxylabs.io") || p.host.includes("pr.oxylabs.io")
       );
 
-      console.log(`Loaded ${this.proxies.length} proxies`);
+      log.info(`Loaded ${this.proxies.length} proxies`);
     } catch (error) {
-      console.error("Error parsing proxy list:", error);
+      log.error("Error parsing proxy list:", error);
     }
   }
 

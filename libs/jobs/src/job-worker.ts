@@ -1,5 +1,8 @@
 import type { ClaimedFlashJob, FlashJobStage, FlashJobsDb } from "@flashcastr/database";
+import { createLogger } from "@flashcastr/logger";
 import { FatalMessageError, TransientError } from "./errors.js";
+
+const log = createLogger("jobs");
 
 export interface JobWorkerOptions {
   stage: FlashJobStage;
@@ -112,7 +115,7 @@ export class JobWorker {
     try {
       await this.settleFailure(job, error);
     } catch (settleErr) {
-      console.error(`[JobWorker] Failed to settle job ${job.flash_id}/${job.stage}:`, settleErr);
+      log.error(`[JobWorker] Failed to settle job ${job.flash_id}/${job.stage}:`, settleErr);
     }
   }
 

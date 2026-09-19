@@ -1,6 +1,9 @@
 import { Pool, PoolClient } from "pg";
 import type { Flash } from "@flashcastr/shared-types";
+import { createLogger } from "@flashcastr/logger";
 import { Postgres } from "./postgres-base.js";
+
+const log = createLogger("database");
 
 export class PostgresFlashesDb extends Postgres<Flash> {
   constructor(pool: Pool) {
@@ -41,7 +44,7 @@ export class PostgresFlashesDb extends Postgres<Flash> {
       if (errors.length === 0) {
         validFlashes.push(this.sanitizeFlash(flash));
       } else {
-        console.warn(
+        log.warn(
           `[PostgresFlashesDb] Invalid flash ${flash.flash_id}: ${errors.join(", ")}`
         );
       }
@@ -81,7 +84,7 @@ export class PostgresFlashesDb extends Postgres<Flash> {
       ]);
       return result.rows;
     } catch (error) {
-      console.error(`[PostgresFlashesDb] Batch insert failed:`, error);
+      log.error(`[PostgresFlashesDb] Batch insert failed:`, error);
       return await this.insertIndividually(dedupedFlashes, client);
     }
   }
@@ -175,7 +178,7 @@ export class PostgresFlashesDb extends Postgres<Flash> {
         ]);
         if (result.rows.length > 0) successful.push(result.rows[0]);
       } catch (error) {
-        console.error(
+        log.error(
           `[PostgresFlashesDb] Individual insert failed for flash ${flash.flash_id}:`,
           error instanceof Error ? error.message : error
         );

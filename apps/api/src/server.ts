@@ -21,6 +21,7 @@ import { createResolvers } from "./resolvers/index.js";
 import type { PubSubEngine } from "./pubsub.js";
 import { InMemoryPubSub } from "./pubsub.js";
 import { SubscriptionConsumer } from "./subscription-consumer.js";
+import { createSubscriptionMetricsHooks } from "./subscription-metrics.js";
 import { shutdownTracing } from "./tracing.js";
 import {
   registry,
@@ -69,7 +70,7 @@ const wsServer = new WebSocketServer({
   path: "/graphql",
 });
 
-const wsServerCleanup = useServer({ schema }, wsServer);
+const wsServerCleanup = useServer({ schema, ...createSubscriptionMetricsHooks() }, wsServer);
 
 // Apollo Server v4
 const metricsPlugin: ApolloServerPlugin<BaseContext> = {

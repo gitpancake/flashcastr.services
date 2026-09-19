@@ -130,7 +130,7 @@ export class PostgresFlashesDb extends Postgres<Flash> {
   }
 
   async getRecentFlashIds(limit: number): Promise<number[]> {
-    const sql = `SELECT flash_id FROM flashes ORDER BY timestamp DESC LIMIT $1`;
+    const sql = `SELECT flash_id::int AS flash_id FROM flashes ORDER BY timestamp DESC LIMIT $1`;
     const rows = await this.query<{ flash_id: number }>(sql, [limit]);
     return rows.map((r) => r.flash_id);
   }

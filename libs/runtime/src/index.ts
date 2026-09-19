@@ -1,4 +1,4 @@
-import { createLogger, flushLogs, type Logger } from "@flashcastr/logger";
+import { createLogger, type Logger } from "@flashcastr/logger";
 import { startMetricsServer, type Registry } from "@flashcastr/metrics";
 import type { HealthCheck } from "@flashcastr/health";
 
@@ -30,7 +30,7 @@ export function runService(name: string, options: RunServiceOptions): void {
   let exiting = false;
 
   const exit = async (code: number): Promise<never> => {
-    await flushLogs();
+    await log.flush();
     process.exit(code);
   };
 

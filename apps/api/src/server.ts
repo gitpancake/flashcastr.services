@@ -14,7 +14,7 @@ import { WebSocketServer } from "ws";
 
 import { getPool, closePool } from "@flashcastr/database";
 import { intEnv, optionalEnv } from "@flashcastr/config";
-import { createLogger, flushLogs } from "@flashcastr/logger";
+import { createLogger } from "@flashcastr/logger";
 
 import { typeDefs } from "./schema.js";
 import { createResolvers } from "./resolvers/index.js";
@@ -178,7 +178,7 @@ async function main() {
     if (subscriptionConsumer) await subscriptionConsumer.close();
     await closePool();
     await shutdownTracing();
-    await flushLogs();
+    await log.flush();
     process.exit(0);
   };
 

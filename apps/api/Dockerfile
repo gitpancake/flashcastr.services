@@ -16,12 +16,11 @@ RUN npx esbuild apps/api/src/main.ts \
   --target=node22 \
   --banner:js="import { createRequire as __cr } from 'module'; const require = __cr(import.meta.url);" \
   --external:pg \
-  --external:amqplib \
   --external:@neynar/nodejs-sdk \
   '--external:@opentelemetry/*' \
   --outfile=/app/dist/main.js
 
-RUN mkdir -p /app/runtime && node -e "require('fs').writeFileSync('/app/runtime/package.json', JSON.stringify({ type: 'module', private: true, dependencies: { pg: '^8.16.3', amqplib: '^2.0.1', '@neynar/nodejs-sdk': '^3.137.2', '@opentelemetry/sdk-node': '^0.222.0', '@opentelemetry/auto-instrumentations-node': '^0.80.0', '@opentelemetry/exporter-trace-otlp-http': '^0.222.0', '@opentelemetry/resources': '^2.11.0', '@opentelemetry/semantic-conventions': '1.43' } }, null, 2))"
+RUN mkdir -p /app/runtime && node -e "require('fs').writeFileSync('/app/runtime/package.json', JSON.stringify({ type: 'module', private: true, dependencies: { pg: '^8.16.3', '@neynar/nodejs-sdk': '^3.137.2', '@opentelemetry/sdk-node': '^0.222.0', '@opentelemetry/auto-instrumentations-node': '^0.80.0', '@opentelemetry/exporter-trace-otlp-http': '^0.222.0', '@opentelemetry/resources': '^2.11.0', '@opentelemetry/semantic-conventions': '1.43' } }, null, 2))"
 RUN npm install --omit=dev --prefix /app/runtime
 
 FROM node:22-slim

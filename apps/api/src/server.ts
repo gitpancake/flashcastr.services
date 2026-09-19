@@ -13,14 +13,14 @@ import { useServer } from "graphql-ws/use/ws";
 import { WebSocketServer } from "ws";
 
 import { getPool, closePool } from "@flashcastr/database";
-import { intEnv, optionalEnv } from "@flashcastr/config";
+import { intEnv, optionalEnv, requireEnv } from "@flashcastr/config";
 import { createLogger } from "@flashcastr/logger";
 
 import { typeDefs } from "./schema.js";
 import { createResolvers } from "./resolvers/index.js";
 import type { PubSubEngine } from "./pubsub.js";
 import { InMemoryPubSub } from "./pubsub.js";
-import { SubscriptionConsumer } from "./subscription-consumer.js";
+import { PostgresSubscriptionBridge } from "./subscription-bridge.js";
 import { createSubscriptionMetricsHooks } from "./subscription-metrics.js";
 import { shutdownTracing } from "./tracing.js";
 import { scheduleGaugeUpdates } from "./gauges.js";
@@ -36,7 +36,6 @@ const log = createLogger("api");
 
 const PORT = intEnv("PORT", 4000);
 const METRICS_PORT = intEnv("METRICS_PORT", 9094);
-const RABBITMQ_URL = optionalEnv("RABBITMQ_URL", "");
 const TRUST_PROXY_HOPS = intEnv("TRUST_PROXY_HOPS", 1);
 const CORS_ORIGINS = optionalEnv("CORS_ORIGINS", "");
 const INTROSPECTION_ENABLED = optionalEnv("GRAPHQL_INTROSPECTION", "true") === "true";
@@ -113,21 +112,11 @@ const server = new ApolloServer({
   ],
 });
 
-async function startSubscriptionConsumer(pubsub: PubSubEngine): Promise<SubscriptionConsumer | null> {
-  if (!RABBITMQ_URL) {
-    log.warn("RABBITMQ_URL not set, subscriptions will not receive live events");
-    return null;
-  }
-
-  const consumer = new SubscriptionConsumer(RABBITMQ_URL, pubsub);
-  try {
-    await consumer.startConsuming();
-    log.info("RabbitMQ subscription consumer started");
-    return consumer;
-  } catch (err) {
-    log.error("Failed to connect to RabbitMQ for subscriptions:", err);
-    return null;
-  }
+async function startSubscriptionBridge(pubsub: PubSubEngine): Promise<PostgresSubscriptionBridge> {
+  const bridge = new PostgresSubscriptionBridge(requireEnv("DATABASE_URL"), pubsub);
+  await bridge.start();
+  log.info("Postgres subscription bridge listening");
+  return bridge;
 }
 
 async function databaseHealth(): Promise<"ok" | "error"> {
@@ -157,11 +146,11 @@ async function main() {
 
   scheduleGaugeUpdates(pool, log);
 
-  const subscriptionConsumer = await startSubscriptionConsumer(pubsub);
+  const subscriptionBridge = await startSubscriptionBridge(pubsub);
 
   app.get("/health", async (_req, res) => {
     const database = await databaseHealth();
-    const subscriptions = !RABBITMQ_URL ? "disabled" : subscriptionConsumer?.isConsuming() ? "ok" : "degraded";
+    const subscriptions = subscriptionBridge.isListening() ? "ok" : "degraded";
     const status = database === "error" ? "error" : subscriptions === "degraded" ? "degraded" : "ok";
     res.status(database === "error" ? 503 : 200).json({ status, checks: { database, subscriptions }, timestamp: Date.now() });
   });
@@ -175,7 +164,7 @@ async function main() {
   const shutdown = async (signal: string) => {
     log.info(`Received ${signal}, shutting down...`);
     await server.stop();
-    if (subscriptionConsumer) await subscriptionConsumer.close();
+    await subscriptionBridge.close();
     await closePool();
     await shutdownTracing();
     await log.flush();

@@ -47,11 +47,6 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@nx/js": "22.6.2",
-    "@swc-node/register": "1.11.1",
-    "@swc/cli": "~0.8.0",
-    "@swc/core": "1.15.8",
-    "@swc/helpers": "0.5.18",
     "@types/amqplib": "^0.10.7",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
@@ -60,9 +55,7 @@
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.5.14",
     "esbuild": "^0.28.2",
-    "nx": "22.5.1",
     "prettier": "^2.6.2",
-    "tslib": "^2.3.0",
     "typescript": "~5.9.2",
     "vitest": "^4.1.0"
   },

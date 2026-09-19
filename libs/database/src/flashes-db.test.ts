@@ -31,6 +31,37 @@ describe("PostgresFlashesDb.getRecentFlashIds", () => {
   });
 });
 
+class FakeUpdateIpfsCidPool {
+  calls: Array<{ sql: string; params: unknown[] }> = [];
+
+  async query(sql: string, params: unknown[] = []) {
+    this.calls.push({ sql, params });
+    return { rows: [] };
+  }
+}
+
+describe("PostgresFlashesDb.updateIpfsCid", () => {
+  it("updates ipfs_cid for the given flash_id", async () => {
+    const pool = new FakeUpdateIpfsCidPool();
+    const db = new PostgresFlashesDb(pool as unknown as Pool);
+
+    await db.updateIpfsCid(pool as unknown as Pool, 111, "bafy123");
+
+    expect(pool.calls).toHaveLength(1);
+    expect(pool.calls[0].sql).toMatch(/UPDATE flashes SET ipfs_cid/);
+    expect(pool.calls[0].params).toEqual([111, "bafy123"]);
+  });
+
+  it("is a no-op for an empty ipfs_cid", async () => {
+    const pool = new FakeUpdateIpfsCidPool();
+    const db = new PostgresFlashesDb(pool as unknown as Pool);
+
+    await db.updateIpfsCid(pool as unknown as Pool, 111, "");
+
+    expect(pool.calls).toHaveLength(0);
+  });
+});
+
 function makeFlash(overrides: Partial<Flash>): Flash {
   return {
     flash_id: 111,

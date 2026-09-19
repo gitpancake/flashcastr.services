@@ -157,6 +157,11 @@ export class PostgresFlashesDb extends Postgres<Flash> {
     return rows.map((r) => r.flash_id);
   }
 
+  async updateIpfsCid(client: Pool | PoolClient, flashId: number, ipfsCid: string): Promise<void> {
+    if (!ipfsCid) return;
+    await client.query(`UPDATE flashes SET ipfs_cid = $2 WHERE flash_id = $1`, [flashId, ipfsCid]);
+  }
+
   private async insertIndividually(flashes: Flash[], client: Pool | PoolClient = this.pool): Promise<Flash[]> {
     const successful: Flash[] = [];
     for (const flash of flashes) {

@@ -27,6 +27,28 @@ async function metricValues(registry: Registry, name: string) {
     | undefined)?.values;
 }
 
+async function backlogValue(registry: Registry, stage: string, state: string): Promise<number | undefined> {
+  const values = await metricValues(registry, "flash_jobs_backlog");
+  return values?.find((value) => value.labels.stage === stage && value.labels.state === state)?.value;
+}
+
+// observeJobBacklog's first sample() is fire-and-forget, so poll for it to
+// land instead of racing a fixed sleep against it (flaky under CI load).
+async function pollBacklogValue(
+  registry: Registry,
+  stage: string,
+  state: string,
+  timeoutMs = 2000
+): Promise<number | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await backlogValue(registry, stage, state);
+    if (value !== undefined) return value;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return undefined;
+}
+
 describe("observeJobBacklog", () => {
   it("sets flash_jobs_backlog per stage/state from the query results", async () => {
     const registry = new Registry();
@@ -137,20 +159,10 @@ describe.skipIf(!process.env.DATABASE_URL)("observeJobBacklog against a real Pos
 
     const registry = new Registry();
     const stop = observeJobBacklog(registry, pool as unknown as Pool, [{ stage: "pin", maxAttempts: 5 }], 60_000);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const deadValue = await pollBacklogValue(registry, "pin", "dead");
     stop();
 
-    const json = await registry.getMetricsAsJSON();
-    const backlog = json.find((entry) => entry.name === "flash_jobs_backlog") as
-      | { values: { labels: Record<string, string>; value: number }[] }
-      | undefined;
-
-    const deadValue = backlog?.values.find(
-      (value) => value.labels.stage === "pin" && value.labels.state === "dead"
-    )?.value;
-    const leasedValue = backlog?.values.find(
-      (value) => value.labels.stage === "pin" && value.labels.state === "leased"
-    )?.value;
+    const leasedValue = await backlogValue(registry, "pin", "leased");
 
     expect(deadValue).toBe(1);
     expect(leasedValue).toBe(0);

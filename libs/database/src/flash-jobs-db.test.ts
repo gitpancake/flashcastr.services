@@ -76,12 +76,13 @@ describe.skipIf(!process.env.DATABASE_URL)("FlashJobsDb", () => {
     expect(rows).toHaveLength(1);
   });
 
-  it("complete deletes the job row", async () => {
+  it("complete deletes the job row and reports success", async () => {
     const flash = await insertFlash({ flash_id: 333 });
     await db.enqueue(pool, flash.flash_id, "cast");
 
-    await db.complete(pool, flash.flash_id, "cast", 0);
+    const completed = await db.complete(pool, flash.flash_id, "cast", 0);
 
+    expect(completed).toBe(true);
     const { rows } = await pool.query("SELECT * FROM flash_jobs WHERE flash_id = $1 AND stage = $2", [
       flash.flash_id,
       "cast",
@@ -212,7 +213,8 @@ describe.skipIf(!process.env.DATABASE_URL)("FlashJobsDb", () => {
     expect(afterStaleFail.rows[0].last_error).not.toBe("stale failure");
     expect(new Date(afterStaleFail.rows[0].next_attempt_at).getTime()).toBe(liveNextAttemptAt);
 
-    await db.complete(pool, flash.flash_id, "pin", staleAttempts);
+    const staleCompleted = await db.complete(pool, flash.flash_id, "pin", staleAttempts);
+    expect(staleCompleted).toBe(false);
     const afterStaleComplete = await pool.query(
       "SELECT * FROM flash_jobs WHERE flash_id = $1 AND stage = $2",
       [flash.flash_id, "pin"]
@@ -220,7 +222,8 @@ describe.skipIf(!process.env.DATABASE_URL)("FlashJobsDb", () => {
     expect(afterStaleComplete.rows).toHaveLength(1);
 
     // Worker B, using the CORRECT current attempts, settles successfully.
-    await db.complete(pool, flash.flash_id, "pin", secondClaim[0].attempts);
+    const liveCompleted = await db.complete(pool, flash.flash_id, "pin", secondClaim[0].attempts);
+    expect(liveCompleted).toBe(true);
     const afterLiveComplete = await pool.query(
       "SELECT * FROM flash_jobs WHERE flash_id = $1 AND stage = $2",
       [flash.flash_id, "pin"]

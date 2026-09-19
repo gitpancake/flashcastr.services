@@ -2,24 +2,23 @@ import { config } from "dotenv";
 config();
 
 import { Cron } from "croner";
-import { FlashcastrPublisher, ROUTING_KEYS } from "@flashcastr/rabbitmq";
-import { getPool, closePool, FlashcastrUsersDb, PostgresFlashesDb } from "@flashcastr/database";
+import { getPool, closePool, withTransaction, FlashcastrUsersDb, PostgresFlashesDb, FlashJobsDb } from "@flashcastr/database";
 import { createMetricsRegistry, Counter, Gauge } from "@flashcastr/metrics";
 import { runService } from "@flashcastr/runtime";
 import { createLogger } from "@flashcastr/logger";
 import { intEnv, optionalEnv } from "@flashcastr/config";
-import type { FlashReceivedPayload } from "@flashcastr/shared-types";
 import SpaceInvadersAPI, { type FlashInvaderFlash } from "./space-invaders-api.js";
 import { loadRegisteredPlayers } from "./users-loader.js";
 import { loadRecentFlashIds } from "./seed-loader.js";
 import { RecentFlashCache } from "./recent-flash-cache.js";
+import { writeFlashBatch } from "./flash-writer.js";
 
 const log = createLogger("flash-engine");
 const registry = createMetricsRegistry("flash-engine");
 
 const flashesPublished = new Counter({
   name: "flash_engine_flashes_published_total",
-  help: "Total flashes published to RabbitMQ",
+  help: "Total new flashes written to Postgres",
   registers: [registry],
 });
 
@@ -67,11 +66,11 @@ let consecutiveNoChanges = 0;
 let registeredPlayers = new Set<string>();
 let registeredPlayersLoadedAt: number | null = null;
 
-const publisher = new FlashcastrPublisher("flash-engine");
 const api = new SpaceInvadersAPI();
 const pool = getPool();
 const usersDb = new FlashcastrUsersDb(pool);
 const flashesDb = new PostgresFlashesDb(pool);
+const flashJobsDb = new FlashJobsDb(pool);
 
 let registeredPlayersRefresh: Promise<void> | null = null;
 
@@ -98,29 +97,6 @@ export function parisHour(now = new Date()): number {
 function isPeakFlashTime(): boolean {
   const hour = parisHour();
   return hour >= PEAK_START_HOUR && hour < PEAK_END_HOUR;
-}
-
-async function publishFlash(flash: FlashInvaderFlash): Promise<boolean> {
-  if (recentFlashCache.has(flash.flash_id)) return false;
-
-  const payload: FlashReceivedPayload = {
-    flash_id: flash.flash_id,
-    img: flash.img,
-    city: flash.city,
-    text: flash.text,
-    player: flash.player,
-    timestamp: flash.timestamp,
-    flash_count: flash.flash_count,
-  };
-
-  try {
-    await publisher.publish(ROUTING_KEYS.FLASH_RECEIVED, payload);
-    recentFlashCache.remember(flash.flash_id);
-    return true;
-  } catch (err) {
-    log.error(`Failed to publish flash ${flash.flash_id}:`, err);
-    return false;
-  }
 }
 
 function shouldSkipUnchanged(currentFlashCount: string): boolean {
@@ -163,11 +139,12 @@ async function fetchAndPublish(): Promise<void> {
   consecutiveNoChanges = 0;
   lastFlashCountValue = currentFlashCount;
 
-  let publishCount = 0;
   let parisFilteredCount = 0;
+  const eligibleFlashes: FlashInvaderFlash[] = [];
 
   for (const flash of flashes.without_paris) {
-    if (await publishFlash(flash)) publishCount++;
+    if (recentFlashCache.has(flash.flash_id)) continue;
+    eligibleFlashes.push(flash);
   }
 
   const registeredPlayersStale =
@@ -185,7 +162,7 @@ async function fetchAndPublish(): Promise<void> {
       continue;
     }
 
-    if (await publishFlash(flash)) publishCount++;
+    eligibleFlashes.push(flash);
   }
 
   if (parisFilteredCount > 0) {
@@ -193,9 +170,33 @@ async function fetchAndPublish(): Promise<void> {
     log.info(`Filtered ${parisFilteredCount} Paris flashes (non-registered players)`);
   }
 
-  if (publishCount > 0) {
-    flashesPublished.inc(publishCount);
-    log.info(`Published ${publishCount} flashes`);
+  if (eligibleFlashes.length > 0) {
+    await writeAndRememberBatch(eligibleFlashes);
+  }
+}
+
+// Postgres is the sole correctness mechanism here: recentFlashCache is pure
+// read-avoidance, so a batch is only remembered once its transaction commits.
+// A rolled-back transaction writes nothing, so the whole batch is retried on
+// the next poll instead of being silently dropped.
+async function writeAndRememberBatch(eligibleFlashes: FlashInvaderFlash[]): Promise<void> {
+  let insertedFlashIds: number[];
+  try {
+    insertedFlashIds = await withTransaction(pool, (client) =>
+      writeFlashBatch(client, flashesDb, flashJobsDb, eligibleFlashes)
+    );
+  } catch (err) {
+    log.error(`Failed to write flash batch of ${eligibleFlashes.length}:`, err);
+    return;
+  }
+
+  for (const flash of eligibleFlashes) {
+    recentFlashCache.remember(flash.flash_id);
+  }
+
+  if (insertedFlashIds.length > 0) {
+    flashesPublished.inc(insertedFlashIds.length);
+    log.info(`Wrote ${insertedFlashIds.length} new flashes`);
   }
 }
 
@@ -214,12 +215,10 @@ runService("flash-engine", {
   registry,
   metricsPort: intEnv("METRICS_PORT", 9090),
   healthChecks: {
-    rabbitmq: () => ({ status: publisher.isConnected() ? "ok" : "degraded" }),
     registeredPlayers: registeredPlayersHealth,
   },
   start: async (ctx) => {
     ctx.onShutdown("postgres", () => closePool());
-    ctx.onShutdown("publisher", () => publisher.close());
 
     await refreshRegisteredPlayers();
 

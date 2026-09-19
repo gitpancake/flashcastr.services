@@ -1,8 +1,11 @@
+import type { Pool } from "pg";
 import { TransientError, ROUTING_KEYS, type FlashcastrPublisher } from "@flashcastr/rabbitmq";
 import { CircuitBreakerOpenError, type CircuitBreaker } from "@flashcastr/resilience";
 import { createLogger } from "@flashcastr/logger";
 import type { Counter } from "@flashcastr/metrics";
-import type { FlashReceivedPayload, ImagePinnedPayload } from "@flashcastr/shared-types";
+import type { PostgresFlashesDb, FlashJobsDb } from "@flashcastr/database";
+import { withTransaction, notifyFlashStored } from "@flashcastr/database";
+import type { FlashReceivedPayload, ImagePinnedPayload, FlashStoredPayload } from "@flashcastr/shared-types";
 import type { ImageSource } from "./imageSource.js";
 import type { Pinner } from "./pinner.js";
 
@@ -21,6 +24,35 @@ export class RabbitMqPinCompletionPort implements PinCompletionPort {
 
   async complete(payload: ImagePinnedPayload, correlationId: string): Promise<void> {
     await this.publisher.publish(ROUTING_KEYS.IMAGE_PINNED, payload, correlationId);
+  }
+}
+
+function toStoredPayload(payload: ImagePinnedPayload): FlashStoredPayload {
+  return { ...payload, db_flash_id: payload.flash_id, stored_at: Date.now() };
+}
+
+// expectedAttempts fences this settle against the pin job's lease (see
+// FlashJobsDb.complete): if another worker already reclaimed and completed
+// the job, the DELETE matches no row and the remaining side effects
+// (updateIpfsCid, enqueue(cast), notifyFlashStored) must not run — otherwise
+// a reclaimed job emits a spurious duplicate flash_stored NOTIFY and a
+// spurious duplicate pending cast job.
+export class PostgresPinCompletionPort implements PinCompletionPort {
+  constructor(
+    private readonly pool: Pool,
+    private readonly flashesDb: PostgresFlashesDb,
+    private readonly flashJobsDb: FlashJobsDb,
+    private readonly expectedAttempts: number
+  ) {}
+
+  async complete(payload: ImagePinnedPayload): Promise<void> {
+    await withTransaction(this.pool, async (client) => {
+      const completed = await this.flashJobsDb.complete(client, payload.flash_id, "pin", this.expectedAttempts);
+      if (!completed) return;
+      await this.flashesDb.updateIpfsCid(client, payload.flash_id, payload.ipfs_cid);
+      await this.flashJobsDb.enqueue(client, payload.flash_id, "cast");
+      await notifyFlashStored(client, toStoredPayload(payload));
+    });
   }
 }
 

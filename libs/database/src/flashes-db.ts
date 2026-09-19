@@ -135,6 +135,33 @@ export class PostgresFlashesDb extends Postgres<Flash> {
     };
   }
 
+  async insertNew(client: Pool | PoolClient, flashes: Flash[]): Promise<number[]> {
+    if (!flashes.length) return [];
+
+    const flashIds = flashes.map((f) => f.flash_id);
+    const cities = flashes.map((f) => f.city);
+    const players = flashes.map((f) => f.player);
+    const imgs = flashes.map((f) => f.img);
+    const texts = flashes.map((f) => f.text);
+    const timestamps = flashes.map((f) => new Date(f.timestamp * 1000));
+    const flashCounts = flashes.map((f) => f.flash_count);
+
+    const sql = `
+      INSERT INTO flashes (
+        flash_id, city, player, img, ipfs_cid, text, timestamp, flash_count
+      )
+      SELECT flash_id, city, player, img, NULL AS ipfs_cid, text, timestamp, flash_count FROM UNNEST(
+        $1::bigint[], $2::text[], $3::text[], $4::text[],
+        $5::text[], $6::timestamp[], $7::text[]
+      ) AS t(flash_id, city, player, img, text, timestamp, flash_count)
+      ON CONFLICT (flash_id) DO NOTHING
+      RETURNING flash_id::int AS flash_id;
+    `;
+
+    const result = await client.query(sql, [flashIds, cities, players, imgs, texts, timestamps, flashCounts]);
+    return result.rows.map((row: { flash_id: number }) => row.flash_id);
+  }
+
   async getAllPlayers(username?: string): Promise<string[]> {
     let sql = "SELECT DISTINCT player FROM flashes WHERE player IS NOT NULL";
     const params: string[] = [];

@@ -1,16 +1,8 @@
 import { config } from "dotenv";
 config();
 
-import type { Pool } from "pg";
 import { FlashcastrPublisher, observeQueueDepths } from "@flashcastr/rabbitmq";
-import {
-  getPool,
-  PostgresFlashesDb,
-  FlashJobsDb,
-  closePool,
-  withTransaction,
-  notifyFlashStored,
-} from "@flashcastr/database";
+import { getPool, PostgresFlashesDb, FlashJobsDb, closePool } from "@flashcastr/database";
 import { JobWorker, observeJobBacklog } from "@flashcastr/jobs";
 import { createMetricsRegistry, Counter, Gauge } from "@flashcastr/metrics";
 import { runService } from "@flashcastr/runtime";
@@ -18,10 +10,15 @@ import { CircuitBreaker, type CircuitState } from "@flashcastr/resilience";
 import { createLogger } from "@flashcastr/logger";
 import { requireEnv, intEnv } from "@flashcastr/config";
 import { ProxyRotator } from "@flashcastr/proxy";
-import type { FlashReceivedPayload, ImagePinnedPayload, FlashStoredPayload } from "@flashcastr/shared-types";
+import type { FlashReceivedPayload } from "@flashcastr/shared-types";
 import { AxiosImageSource } from "./axiosImageSource.js";
 import { PinataPinner } from "./pinataPinner.js";
-import { ImagePinner, RabbitMqPinCompletionPort, type PinCompletionPort } from "./imagePinner.js";
+import {
+  ImagePinner,
+  RabbitMqPinCompletionPort,
+  PostgresPinCompletionPort,
+  type PinCompletionPort,
+} from "./imagePinner.js";
 import { ImageEngineConsumer } from "./imageEngineConsumer.js";
 
 const log = createLogger("image-engine");
@@ -100,28 +97,6 @@ function buildImagePinner(completionPort: PinCompletionPort): ImagePinner {
     logEveryNFlashes: LOG_EVERY_N_FLASHES,
     ipfsUploads,
   });
-}
-
-function toStoredPayload(payload: ImagePinnedPayload): FlashStoredPayload {
-  return { ...payload, db_flash_id: payload.flash_id, stored_at: Date.now() };
-}
-
-class PostgresPinCompletionPort implements PinCompletionPort {
-  constructor(
-    private readonly pool: Pool,
-    private readonly flashesDb: PostgresFlashesDb,
-    private readonly flashJobsDb: FlashJobsDb,
-    private readonly expectedAttempts: number
-  ) {}
-
-  async complete(payload: ImagePinnedPayload): Promise<void> {
-    await withTransaction(this.pool, async (client) => {
-      await this.flashesDb.updateIpfsCid(client, payload.flash_id, payload.ipfs_cid);
-      await this.flashJobsDb.complete(client, payload.flash_id, "pin", this.expectedAttempts);
-      await this.flashJobsDb.enqueue(client, payload.flash_id, "cast");
-      await notifyFlashStored(client, toStoredPayload(payload));
-    });
-  }
 }
 
 const usingJobsSource = process.env.IMAGE_ENGINE_SOURCE === "jobs";

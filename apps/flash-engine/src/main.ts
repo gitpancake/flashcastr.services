@@ -3,7 +3,7 @@ config();
 
 import { Cron } from "croner";
 import { FlashcastrPublisher, ROUTING_KEYS } from "@flashcastr/rabbitmq";
-import { getPool, closePool, FlashcastrUsersDb } from "@flashcastr/database";
+import { getPool, closePool, FlashcastrUsersDb, PostgresFlashesDb } from "@flashcastr/database";
 import { createMetricsRegistry, Counter, Gauge } from "@flashcastr/metrics";
 import { runService } from "@flashcastr/runtime";
 import { createLogger } from "@flashcastr/logger";
@@ -11,6 +11,7 @@ import { intEnv, optionalEnv } from "@flashcastr/config";
 import type { FlashReceivedPayload } from "@flashcastr/shared-types";
 import SpaceInvadersAPI, { type FlashInvaderFlash } from "./space-invaders-api.js";
 import { loadRegisteredPlayers } from "./users-loader.js";
+import { loadRecentFlashIds } from "./seed-loader.js";
 
 const log = createLogger("flash-engine");
 const registry = createMetricsRegistry("flash-engine");
@@ -69,6 +70,7 @@ const publisher = new FlashcastrPublisher("flash-engine");
 const api = new SpaceInvadersAPI();
 const pool = getPool();
 const usersDb = new FlashcastrUsersDb(pool);
+const flashesDb = new PostgresFlashesDb(pool);
 
 let registeredPlayersRefresh: Promise<void> | null = null;
 
@@ -228,6 +230,10 @@ runService("flash-engine", {
     ctx.onShutdown("publisher", () => publisher.close());
 
     await refreshRegisteredPlayers();
+
+    const seededFlashIds = await loadRecentFlashIds(flashesDb, MAX_CACHE_SIZE);
+    for (const flashId of seededFlashIds) recentFlashIds.add(flashId);
+    log.info(`seeded ${seededFlashIds.size} known flashes`);
 
     fetchAndPublish().catch((err) => log.error("Initial fetch failed:", err));
 

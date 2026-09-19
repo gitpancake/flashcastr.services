@@ -118,6 +118,32 @@ describe("FlashCaster.handle", () => {
     expect(result).toMatchObject({ flash_id: 1, cast_hash: null, user_fid: 42, user_username: "alice", auto_cast: false });
   });
 
+  it("computes ipfs_url and db_flash_id from a minimal CastableFlash-shaped row (job worker path)", async () => {
+    const flashes = buildFlashesDb();
+    const users = buildUsersDb({ getByUsername: vi.fn(async () => buildUser({ auto_cast: false })) });
+    const gateway = buildGateway();
+    const flashCaster = buildFlashCaster({ users, flashes, gateway });
+
+    const minimalFlash = {
+      flash_id: 7,
+      city: "Paris",
+      player: "alice",
+      img: "img.png",
+      ipfs_cid: "cid456",
+      text: "text",
+      timestamp: 1700000000,
+      flash_count: "1",
+    };
+
+    const result = await flashCaster.handle(minimalFlash);
+
+    expect(result).toMatchObject({
+      ipfs_url: "https://gateway.pinata.cloud/ipfs/cid456",
+      db_flash_id: 7,
+    });
+    expect(typeof result?.stored_at).toBe("number");
+  });
+
   it("skips entirely when auto_cast is on but the flash has no IPFS CID", async () => {
     const flashes = buildFlashesDb();
     const users = buildUsersDb({ getByUsername: vi.fn(async () => buildUser({ auto_cast: true })) });

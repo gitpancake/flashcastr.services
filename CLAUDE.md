@@ -6,7 +6,7 @@ npm-workspaces monorepo: 4 pipeline engines, 1 GraphQL API, 1 LangGraph agent, 1
 
 - `apps/` — flash-engine, image-engine, database-engine, neynar-engine, api, agent-invaders (own `CLAUDE.md`, no lib imports)
 - `libs/` — shared-types, rabbitmq, database, proxy, metrics, health, logger, crypto, config, resilience, runtime
-- Imports use `@flashcastr/<lib>`; resolved from source via the `@flashcastr/source` exports condition. No build step: services run under `tsx`.
+- Imports use `@flashcastr/<lib>`; resolved from source via the `@flashcastr/source` exports condition. Dev/droplet run under `tsx` directly, no build step; Docker images for the 5 Railway apps bundle with esbuild (see Deployment).
 - `scripts/` — `replay-dead-letters.ts` (DLQ → original routing key), `migrate-old-queue.ts` (one-off)
 
 ## Stack
@@ -77,8 +77,10 @@ No schema source in repo; tables pre-exist in Railway Postgres.
 ## Deployment
 
 - Railway (Dockerfile per app, auto-deploy on main): flash-engine, database-engine, neynar-engine, api, agent-invaders. Railway service settings own Dockerfile path/watch patterns.
+- Those 5 Dockerfiles are multi-stage: builder runs `npm ci` + `esbuild src/main.ts --bundle --platform=node --format=esm --target=node22` with `pg`/`amqplib`/`@neynar/nodejs-sdk` (and `@opentelemetry/*` for api) marked `--external`; a generated minimal `package.json` installs just those externals into the runtime stage, which copies only that `node_modules` + the bundle — no `libs/`, no source, no dev deps. agent-invaders imports no `@flashcastr/*` lib, so its Dockerfile skips the `libs/` COPY entirely.
+- image-engine's Dockerfile stays tsx-based (droplet is its real deploy path, see below); only used locally via `docker-compose up`.
 - DigitalOcean droplet via `deploy-image-engine.yml` (ssh + pm2): image-engine. The droplet's Node must be ≥22.
-- CI: `npm run typecheck` + `npm test` on push/PR.
+- CI: `npm run typecheck` + `npm test` on push/PR (no Docker build in CI).
 
 ## Env
 
@@ -91,6 +93,7 @@ See `.env.example`. Hardening knobs: `API_KEY`, `TRUST_PROXY_HOPS`, `RATE_LIMIT_
 - `getFid()` (api) is memoized per process; the developer mnemonic is only read there.
 - Neynar `PostCastReqBodyEmbeds` types every embed field as required; `buildFlashCast` casts a url-only embed.
 - Prometheus `operation_name` label is the schema root field, not the client operation name.
+- esbuild's CJS interop shim for `dotenv`'s internal `require("fs")` throws `Dynamic require of "fs" is not supported` under plain `--format=esm` output; the Docker builder stages carry a `--banner:js` injecting `createRequire(import.meta.url)` to fix it. Any new bundled app needs the same banner.
 
 <!-- nx configuration start-->
 <!-- Leave the start & end comments to automatically receive updates. -->

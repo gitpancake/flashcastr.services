@@ -18,4 +18,12 @@ describe("loadRecentFlashIds", () => {
 
     expect(ids).toEqual(new Set());
   });
+
+  it("inserts ids oldest-first so Set iteration order starts with the oldest flash", async () => {
+    const flashesDb = { getRecentFlashIds: vi.fn().mockResolvedValue([30, 20, 10]) };
+
+    const ids = await loadRecentFlashIds(flashesDb, 10);
+
+    expect([...ids]).toEqual([10, 20, 30]);
+  });
 });

@@ -76,12 +76,13 @@ export class FlashJobsDb extends Postgres<FlashJob> {
     flashId: number,
     stage: FlashJobStage,
     expectedAttempts: number
-  ): Promise<void> {
-    await client.query(`DELETE FROM flash_jobs WHERE flash_id = $1 AND stage = $2 AND attempts = $3`, [
+  ): Promise<boolean> {
+    const result = await client.query(`DELETE FROM flash_jobs WHERE flash_id = $1 AND stage = $2 AND attempts = $3`, [
       flashId,
       stage,
       expectedAttempts,
     ]);
+    return (result.rowCount ?? 0) > 0;
   }
 
   async fail(

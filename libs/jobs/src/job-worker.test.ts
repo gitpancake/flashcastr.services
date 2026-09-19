@@ -37,7 +37,7 @@ function claimedJob(overrides: Partial<ClaimedFlashJob> = {}): ClaimedFlashJob {
 function fakeDb(overrides: Partial<FakeDb> = {}): FakeDb {
   return {
     claim: vi.fn(async () => []),
-    complete: vi.fn(async () => undefined),
+    complete: vi.fn(async () => true),
     fail: vi.fn(async () => undefined),
     defer: vi.fn(async () => undefined),
     ...overrides,

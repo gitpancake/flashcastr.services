@@ -121,4 +121,16 @@ describe("createLogger", () => {
 
     expect(() => log.info("weird", circular)).not.toThrow();
   });
+
+  it("builds a Loki-backed logger from LOKI_URL and flushes it cleanly", async () => {
+    process.env.LOKI_URL = "https://loki-user:loki-pass@logger-unit-test.invalid:3100";
+    try {
+      const log = createLogger("api");
+
+      expect(() => log.info("shipped to loki")).not.toThrow();
+      await expect(log.flush()).resolves.toBeUndefined();
+    } finally {
+      delete process.env.LOKI_URL;
+    }
+  });
 });

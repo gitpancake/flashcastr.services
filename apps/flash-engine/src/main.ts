@@ -12,6 +12,7 @@ import { loadRegisteredPlayers } from "./users-loader.js";
 import { loadRecentFlashIds } from "./seed-loader.js";
 import { RecentFlashCache } from "./recent-flash-cache.js";
 import { writeFlashBatch } from "./flash-writer.js";
+import { shouldPoll } from "./poll-gate.js";
 
 const log = createLogger("flash-engine");
 const registry = createMetricsRegistry("flash-engine");
@@ -53,10 +54,16 @@ const usersRefreshedTotal = new Counter({
   registers: [registry],
 });
 
+const lastSuccessfulFetchTimestamp = new Gauge({
+  name: "flash_engine_last_successful_fetch_timestamp_seconds",
+  help: "Unix timestamp (seconds) of the last successful upstream fetch",
+  registers: [registry],
+});
+
 const MAX_CACHE_SIZE = 10000;
 const PEAK_START_HOUR = 6;
 const PEAK_END_HOUR = 23;
-const OFF_PEAK_SKIP_CHANCE = 0.5;
+const OFF_PEAK_MIN_INTERVAL_MS = intEnv("OFF_PEAK_MIN_INTERVAL_MS", 600000);
 const USERS_REFRESH_SCHEDULE = "*/5 * * * *";
 const USERS_REFRESH_INTERVAL_MS = 5 * 60_000;
 
@@ -65,6 +72,8 @@ let lastFlashCountValue: string | null = null;
 let consecutiveNoChanges = 0;
 let registeredPlayers = new Set<string>();
 let registeredPlayersLoadedAt: number | null = null;
+let lastAttemptAt: number | null = null;
+let lastSuccessfulFetchAt: number | null = null;
 
 const api = new SpaceInvadersAPI();
 const pool = getPool();
@@ -107,15 +116,21 @@ function shouldSkipUnchanged(currentFlashCount: string): boolean {
 }
 
 async function fetchAndPublish(): Promise<void> {
-  if (!isPeakFlashTime() && Math.random() < OFF_PEAK_SKIP_CHANCE) {
-    log.debug("Skipping run during off-peak hours");
+  const now = Date.now();
+  const gate = shouldPoll({ now, lastAttemptAt, isPeak: isPeakFlashTime(), offPeakMinIntervalMs: OFF_PEAK_MIN_INTERVAL_MS });
+  if (!gate.poll) {
+    const secondsUntilEligible = gate.nextEligibleAt ? Math.ceil((gate.nextEligibleAt - now) / 1000) : 0;
+    log.info(`Skipping run (${gate.reason}); next eligible poll in ${secondsUntilEligible}s`);
     return;
   }
+  lastAttemptAt = now;
 
   let flashes;
   try {
     flashes = await api.getFlashes();
     apiCallsTotal.inc({ result: "success" });
+    lastSuccessfulFetchAt = Date.now();
+    lastSuccessfulFetchTimestamp.set(lastSuccessfulFetchAt / 1000);
   } catch (error) {
     apiCallsTotal.inc({ result: "error" });
     log.error("Failed to fetch flashes:", error);
@@ -211,11 +226,21 @@ function registeredPlayersHealth(): { status: "ok" | "degraded"; message: string
   return { status, message: `${registeredPlayers.size} cached, ${Math.round(ageMs / 1000)}s old` };
 }
 
+function sourcePollHealth(): { status: "ok" | "degraded"; message: string } {
+  if (lastSuccessfulFetchAt === null) {
+    return { status: "degraded", message: "no successful fetch yet" };
+  }
+  const ageMs = Date.now() - lastSuccessfulFetchAt;
+  const status = ageMs < 30 * 60_000 ? "ok" : "degraded";
+  return { status, message: `last successful fetch ${Math.round(ageMs / 1000)}s ago` };
+}
+
 runService("flash-engine", {
   registry,
   metricsPort: intEnv("METRICS_PORT", 9090),
   healthChecks: {
     registeredPlayers: registeredPlayersHealth,
+    sourcePoll: sourcePollHealth,
   },
   start: async (ctx) => {
     ctx.onShutdown("postgres", () => closePool());

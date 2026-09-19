@@ -12,10 +12,22 @@ interface RateLimiterLike {
   wait(): Promise<void>;
 }
 
+export interface PinCompletionPort {
+  complete(payload: ImagePinnedPayload, correlationId: string): Promise<void>;
+}
+
+export class RabbitMqPinCompletionPort implements PinCompletionPort {
+  constructor(private readonly publisher: Pick<FlashcastrPublisher, "publish">) {}
+
+  async complete(payload: ImagePinnedPayload, correlationId: string): Promise<void> {
+    await this.publisher.publish(ROUTING_KEYS.IMAGE_PINNED, payload, correlationId);
+  }
+}
+
 export interface ImagePinnerOptions {
   readonly source: ImageSource;
   readonly pinner: Pinner;
-  readonly publisher: Pick<FlashcastrPublisher, "publish">;
+  readonly completionPort: PinCompletionPort;
   readonly breaker: CircuitBreaker;
   readonly rateLimiter: RateLimiterLike;
   readonly baseUrl: string;
@@ -58,7 +70,7 @@ export class ImagePinner {
     }
 
     const payload: ImagePinnedPayload = { ...flash, ipfs_cid: cid, ipfs_url: `${this.options.gatewayUrl}/${cid}` };
-    await this.options.publisher.publish(ROUTING_KEYS.IMAGE_PINNED, payload, correlationId);
+    await this.options.completionPort.complete(payload, correlationId);
 
     if (flash.flash_id % this.options.logEveryNFlashes === 0) {
       log.info(`Pinned flash ${flash.flash_id}: ${cid}`);

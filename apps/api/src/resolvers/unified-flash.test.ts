@@ -70,7 +70,7 @@ describe("unifiedFlashes cursor mode", () => {
     const [sql, params] = pool.query.mock.calls[0];
     expect(sql).toContain("WHERE LOWER(f.city) = LOWER($1)");
     expect(sql).toContain(
-      "(COALESCE(f.timestamp, 'infinity'::timestamp), f.flash_id) < (COALESCE(to_timestamp($2::bigint), 'infinity'::timestamp), $3::bigint)"
+      "(COALESCE(f.timestamp, 'infinity'::timestamp), f.flash_id) < (COALESCE(to_timestamp($2::bigint) AT TIME ZONE 'UTC', 'infinity'::timestamp), $3::bigint)"
     );
     expect(sql).toContain("ORDER BY COALESCE(f.timestamp, 'infinity'::timestamp) DESC, f.flash_id DESC");
     expect(sql).toContain("LIMIT $4");

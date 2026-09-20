@@ -56,12 +56,23 @@ export class WhereBuilder {
    * COALESCE(timestamp, 'infinity') DESC, id DESC`. Matches
    * idx_flashes_timestamp_id_keyset's expression text so the planner can use
    * it instead of an OFFSET-style scan.
+   *
+   * `timestampEpochSeconds` is decoded back through `to_timestamp(...) AT
+   * TIME ZONE 'UTC'` rather than a bare `to_timestamp(...)`: the column is
+   * `timestamp without time zone` and its cursor is encoded via
+   * `EXTRACT(EPOCH FROM ...)`, which always treats a naive timestamp as UTC
+   * regardless of session timezone. `to_timestamp()` alone returns a
+   * `timestamptz`, and comparing that to the naive column implicitly
+   * reinterprets it in the session's timezone GUC — silently corrupting the
+   * cursor (and the pagination results) on any non-UTC session. `AT TIME
+   * ZONE 'UTC'` converts back to a naive UTC timestamp, making the
+   * comparison timezone-independent.
    */
   keysetBefore(timestampColumn: string, idColumn: string, timestampEpochSeconds: string | null, id: string): this {
     const tsParam = this.placeholder(timestampEpochSeconds);
     const idParam = this.placeholder(id);
     this.conditions.push(
-      `(COALESCE(${timestampColumn}, 'infinity'::timestamp), ${idColumn}) < (COALESCE(to_timestamp(${tsParam}::bigint), 'infinity'::timestamp), ${idParam}::bigint)`
+      `(COALESCE(${timestampColumn}, 'infinity'::timestamp), ${idColumn}) < (COALESCE(to_timestamp(${tsParam}::bigint) AT TIME ZONE 'UTC', 'infinity'::timestamp), ${idParam}::bigint)`
     );
     return this;
   }

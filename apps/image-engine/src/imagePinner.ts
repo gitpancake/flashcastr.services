@@ -34,14 +34,19 @@ export class PostgresPinCompletionPort implements PinCompletionPort {
     private readonly pool: Pool,
     private readonly flashesDb: PostgresFlashesDb,
     private readonly flashJobsDb: FlashJobsDb,
-    private readonly expectedAttempts: number
+    private readonly expectedAttempts: number,
+    private readonly imageTier: string | null
   ) {}
 
   async complete(payload: ImagePinnedPayload): Promise<void> {
     await withTransaction(this.pool, async (client) => {
       const completed = await this.flashJobsDb.complete(client, payload.flash_id, "pin", this.expectedAttempts);
       if (!completed) return;
-      await this.flashesDb.updateIpfsCid(client, payload.flash_id, payload.ipfs_cid);
+      if (this.imageTier) {
+        await this.flashesDb.updateImageRef(client, payload.flash_id, payload.ipfs_cid, this.imageTier);
+      } else {
+        await this.flashesDb.updateIpfsCid(client, payload.flash_id, payload.ipfs_cid);
+      }
       await this.flashJobsDb.enqueue(client, payload.flash_id, "cast");
       await notifyFlashStored(client, toStoredPayload(payload));
     });

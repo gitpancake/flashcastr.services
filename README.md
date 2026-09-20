@@ -122,6 +122,8 @@ Key variables per service:
 | `PROXY_LIST` | flash-engine, image-engine | Comma-separated proxy URLs |
 | `CRON_SCHEDULE`, `OFF_PEAK_MIN_INTERVAL_MS` | flash-engine | Poll cadence |
 | `PINATA_JWT` | image-engine | Pinata API JWT for IPFS pinning |
+| `IMAGE_STORE` | image-engine | `pinata` (default) or `b2` — which pinner writes new flashes. Defaults to `pinata`, so behavior is unchanged with no env changes; `b2` is dark/unused in production until a documented cockpit flip sets it on the service |
+| `B2_S3_ENDPOINT`, `B2_REGION`, `B2_BUCKET`, `B2_PUBLIC_BASE`, `B2_KEY_ID`, `B2_APPLICATION_KEY` | image-engine | Backblaze B2 S3-compatible endpoint/bucket/credentials, only read when `IMAGE_STORE=b2` |
 | `CONSUMER_CONCURRENCY`, `CONSUMER_RATE_LIMIT`, `CONSUMER_MAX_ATTEMPTS` | image-engine | `pin`-job worker concurrency/rate limit/max attempts |
 | `NEYNAR_API_KEY` | neynar-engine, agent-invaders | Neynar API key for Farcaster |
 | `SIGNER_ENCRYPTION_KEY` | neynar-engine | Hex key for decrypting signer UUIDs |

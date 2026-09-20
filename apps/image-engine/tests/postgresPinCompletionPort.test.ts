@@ -51,11 +51,15 @@ describe.skipIf(!process.env.DATABASE_URL)("PostgresPinCompletionPort", () => {
     await flashJobsDb.enqueue(pool, flashId, "pin");
     const [claimed] = await flashJobsDb.claim("pin", 1, 60_000, 5);
 
-    const port = new PostgresPinCompletionPort(pool, flashesDb, flashJobsDb, claimed.attempts);
+    const port = new PostgresPinCompletionPort(pool, flashesDb, flashJobsDb, claimed.attempts, null);
     await port.complete(buildPayload(flashId));
 
-    const { rows: flashRows } = await pool.query("SELECT ipfs_cid FROM flashes WHERE flash_id = $1", [flashId]);
+    const { rows: flashRows } = await pool.query(
+      "SELECT ipfs_cid, image_tier FROM flashes WHERE flash_id = $1",
+      [flashId]
+    );
     expect(flashRows[0].ipfs_cid).toBe("bafypinned");
+    expect(flashRows[0].image_tier).toBeNull();
 
     const { rows: pinJobRows } = await pool.query(
       "SELECT * FROM flash_jobs WHERE flash_id = $1 AND stage = 'pin'",
@@ -84,7 +88,7 @@ describe.skipIf(!process.env.DATABASE_URL)("PostgresPinCompletionPort", () => {
     await flashJobsDb.claim("pin", 1, 60_000, 5);
 
     // Worker A, unaware it lost the lease, tries to settle using its stale attempts.
-    const port = new PostgresPinCompletionPort(pool, flashesDb, flashJobsDb, staleAttempts);
+    const port = new PostgresPinCompletionPort(pool, flashesDb, flashJobsDb, staleAttempts, null);
     await port.complete(buildPayload(flashId));
 
     const { rows: flashRows } = await pool.query("SELECT ipfs_cid FROM flashes WHERE flash_id = $1", [flashId]);
@@ -102,5 +106,22 @@ describe.skipIf(!process.env.DATABASE_URL)("PostgresPinCompletionPort", () => {
     );
     expect(pinJobRows).toHaveLength(1);
     expect(pinJobRows[0].attempts).toBe(2);
+  });
+
+  it("writes both ipfs_cid and image_tier when constructed with a tier", async () => {
+    const flashId = 333;
+    await insertFlash(flashId);
+    await flashJobsDb.enqueue(pool, flashId, "pin");
+    const [claimed] = await flashJobsDb.claim("pin", 1, 60_000, 5);
+
+    const port = new PostgresPinCompletionPort(pool, flashesDb, flashJobsDb, claimed.attempts, "feed");
+    await port.complete(buildPayload(flashId));
+
+    const { rows: flashRows } = await pool.query(
+      "SELECT ipfs_cid, image_tier FROM flashes WHERE flash_id = $1",
+      [flashId]
+    );
+    expect(flashRows[0].ipfs_cid).toBe("bafypinned");
+    expect(flashRows[0].image_tier).toBe("feed");
   });
 });

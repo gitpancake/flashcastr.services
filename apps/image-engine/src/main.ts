@@ -7,22 +7,54 @@ import { createMetricsRegistry, Counter, Gauge } from "@flashcastr/metrics";
 import { runService } from "@flashcastr/runtime";
 import { CircuitBreaker, type CircuitState } from "@flashcastr/resilience";
 import { createLogger } from "@flashcastr/logger";
-import { requireEnv, intEnv } from "@flashcastr/config";
+import { requireEnv, intEnv, optionalEnv } from "@flashcastr/config";
 import { ProxyRotator } from "@flashcastr/proxy";
 import type { FlashReceivedPayload } from "@flashcastr/shared-types";
 import { AxiosImageSource } from "./axiosImageSource.js";
 import { PinataPinner } from "./pinataPinner.js";
+import { B2Pinner } from "./b2Pinner.js";
 import {
   ImagePinner,
   PostgresPinCompletionPort,
   type PinCompletionPort,
 } from "./imagePinner.js";
+import type { Pinner } from "./pinner.js";
 
 const log = createLogger("image-engine");
 const registry = createMetricsRegistry("image-engine");
-const PINATA_JWT = requireEnv("PINATA_JWT");
 const BASE_URL = "https://api.space-invaders.com";
 const PINATA_GATEWAY = "https://gateway.pinata.cloud/ipfs";
+
+// Dark launch (platform/backblaze-image-storage/01-b2-pinner-and-tier): the
+// pinata path is byte-for-byte today's behavior; b2 is wired but inert until
+// an operator sets IMAGE_STORE=b2 on this service.
+const IMAGE_STORE = optionalEnv("IMAGE_STORE", "pinata");
+
+function buildPinnerForStore(store: string): { pinner: Pinner; gatewayUrl: string; imageTier: string | null } {
+  if (store === "pinata") {
+    return {
+      pinner: new PinataPinner({ jwt: requireEnv("PINATA_JWT") }),
+      gatewayUrl: PINATA_GATEWAY,
+      imageTier: null,
+    };
+  }
+  if (store === "b2") {
+    return {
+      pinner: new B2Pinner({
+        endpoint: requireEnv("B2_S3_ENDPOINT"),
+        region: requireEnv("B2_REGION"),
+        bucket: requireEnv("B2_BUCKET"),
+        keyId: requireEnv("B2_KEY_ID"),
+        applicationKey: requireEnv("B2_APPLICATION_KEY"),
+      }),
+      gatewayUrl: `${requireEnv("B2_PUBLIC_BASE")}/feed`,
+      imageTier: "feed",
+    };
+  }
+  throw new Error(`Unknown IMAGE_STORE "${store}"`);
+}
+
+const { pinner, gatewayUrl, imageTier } = buildPinnerForStore(IMAGE_STORE);
 
 const IPFS_FAILURE_THRESHOLD = 30;
 const IPFS_OPEN_DURATION_MS = 300000;
@@ -79,7 +111,6 @@ const rateLimiter = new RateLimiter(intEnv("CONSUMER_RATE_LIMIT", 250));
 
 const proxyRotator = new ProxyRotator();
 const imageSource = new AxiosImageSource({ proxyRotator });
-const pinner = new PinataPinner({ jwt: PINATA_JWT });
 
 function buildImagePinner(completionPort: PinCompletionPort): ImagePinner {
   return new ImagePinner({
@@ -89,7 +120,7 @@ function buildImagePinner(completionPort: PinCompletionPort): ImagePinner {
     breaker: ipfsBreaker,
     rateLimiter,
     baseUrl: BASE_URL,
-    gatewayUrl: PINATA_GATEWAY,
+    gatewayUrl,
     maxCircuitRetryWaitMs: MAX_CIRCUIT_RETRY_WAIT_MS,
     logEveryNFlashes: LOG_EVERY_N_FLASHES,
     ipfsUploads,
@@ -119,7 +150,7 @@ const jobWorker = new JobWorker(flashJobsDb, {
       timestamp: Math.floor(job.timestamp.getTime() / 1000),
       flash_count: job.flash_count,
     };
-    const completionPort = new PostgresPinCompletionPort(pool, flashesDb, flashJobsDb, job.attempts);
+    const completionPort = new PostgresPinCompletionPort(pool, flashesDb, flashJobsDb, job.attempts, imageTier);
     await buildImagePinner(completionPort).handle(flash, "");
   },
 });

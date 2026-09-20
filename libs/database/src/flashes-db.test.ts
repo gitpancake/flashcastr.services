@@ -62,6 +62,28 @@ describe("PostgresFlashesDb.updateIpfsCid", () => {
   });
 });
 
+describe("PostgresFlashesDb.updateImageRef", () => {
+  it("writes ipfs_cid and image_tier together for a non-empty hash", async () => {
+    const pool = new FakeUpdateIpfsCidPool();
+    const db = new PostgresFlashesDb(pool as unknown as Pool);
+
+    await db.updateImageRef(pool as unknown as Pool, 111, "bafy123", "b2");
+
+    expect(pool.calls).toHaveLength(1);
+    expect(pool.calls[0].sql).toMatch(/UPDATE flashes SET ipfs_cid.*image_tier/s);
+    expect(pool.calls[0].params).toEqual([111, "bafy123", "b2"]);
+  });
+
+  it("is a no-op when hash is empty, regardless of tier", async () => {
+    const pool = new FakeUpdateIpfsCidPool();
+    const db = new PostgresFlashesDb(pool as unknown as Pool);
+
+    await db.updateImageRef(pool as unknown as Pool, 111, "", "b2");
+
+    expect(pool.calls).toHaveLength(0);
+  });
+});
+
 function makeFlash(overrides: Partial<Flash>): Flash {
   return {
     flash_id: 111,

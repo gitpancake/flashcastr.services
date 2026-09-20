@@ -85,7 +85,7 @@ See `.env.example`. Hardening knobs: `API_KEY`, `TRUST_PROXY_HOPS`, `RATE_LIMIT_
 ## Gotchas
 
 - Frontend calls `initiateSignup`, `pollSignupStatus`, `saveFlashIdentification` from the browser with no key; never put `withApiKey` on them.
-- `@flashcastr/logger` always writes to stdout (raw pino JSON lines, no pino-pretty) and additionally tees to Loki via `pino.multistream` when `LOKI_URL` is set — `railway logs` shows app output again regardless of Loki's availability. Railway rate-limits ingested logs at 500 lines/sec per replica (per-replica ceiling, not per-service); this pipeline runs well under it.
+- `@flashcastr/logger` always writes to stdout (raw pino JSON lines, no pino-pretty) and additionally tees to Loki via `pino.multistream` when `LOKI_URL` is set — `railway logs` shows app output again regardless of Loki's availability. Railway rate-limits ingested logs at 500 lines/sec per replica (per-replica ceiling, not per-service); this pipeline runs well under it. `pino-loki`'s batch timer is a non-unref'd `setInterval`, so merely importing a lib that builds a logger (e.g. `@flashcastr/database`) keeps the event loop alive — a short-lived script must `await closeLoggers()` (`@flashcastr/logger`) alongside `closePool()` or it hangs after its last line. This is what timed out the api's migration pre-deploy step for 600s on PR #34.
 - `getFid()` (api) is memoized per process; the developer mnemonic is only read there.
 - Neynar `PostCastReqBodyEmbeds` types every embed field as required; `buildFlashCast` casts a url-only embed.
 - Prometheus `operation_name` label is the schema root field, not the client operation name.

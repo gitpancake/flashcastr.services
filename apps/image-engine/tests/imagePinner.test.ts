@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { CircuitBreaker } from "@flashcastr/resilience";
-import { TransientError } from "@flashcastr/rabbitmq";
+import { TransientError } from "@flashcastr/jobs";
 import type { FlashReceivedPayload } from "@flashcastr/shared-types";
 import type { DownloadedImage, ImageSource } from "../src/imageSource.js";
 import type { Pinner } from "../src/pinner.js";
-import { ImagePinner, RabbitMqPinCompletionPort } from "../src/imagePinner.js";
+import { ImagePinner } from "../src/imagePinner.js";
 
 const CORRELATION_ID = "corr-1";
 
@@ -114,21 +114,5 @@ describe("ImagePinner", () => {
       CORRELATION_ID
     );
     expect(ipfsUploads.inc).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("RabbitMqPinCompletionPort", () => {
-  it("publishes to image.pinned with the given payload and correlation id", async () => {
-    const publish = vi.fn(async () => undefined);
-    const port = new RabbitMqPinCompletionPort({ publish });
-    const payload = {
-      ...buildFlash(),
-      ipfs_cid: "cid123",
-      ipfs_url: "https://gateway.pinata.cloud/ipfs/cid123",
-    };
-
-    await port.complete(payload, "corr-1");
-
-    expect(publish).toHaveBeenCalledWith("image.pinned", payload, "corr-1");
   });
 });

@@ -1,7 +1,6 @@
 import { config } from "dotenv";
 config();
 
-import { FlashcastrPublisher, observeQueueDepths } from "@flashcastr/rabbitmq";
 import { getPool, PostgresFlashesDb, FlashJobsDb, closePool } from "@flashcastr/database";
 import { JobWorker, observeJobBacklog } from "@flashcastr/jobs";
 import { createMetricsRegistry, Counter, Gauge } from "@flashcastr/metrics";
@@ -15,11 +14,9 @@ import { AxiosImageSource } from "./axiosImageSource.js";
 import { PinataPinner } from "./pinataPinner.js";
 import {
   ImagePinner,
-  RabbitMqPinCompletionPort,
   PostgresPinCompletionPort,
   type PinCompletionPort,
 } from "./imagePinner.js";
-import { ImageEngineConsumer } from "./imageEngineConsumer.js";
 
 const log = createLogger("image-engine");
 const registry = createMetricsRegistry("image-engine");
@@ -48,7 +45,7 @@ const CIRCUIT_GAUGE_VALUE: Record<CircuitState, number> = { closed: 0, open: 1, 
 
 // Declared before the breaker so onStateChange can reference it — the
 // breaker only fires onStateChange at runtime, after the module (and thus
-// pinJobWorker, when the "jobs" branch below runs) has finished initializing.
+// pinJobWorker below) has finished initializing.
 let pinJobWorker: JobWorker | undefined;
 
 const ipfsBreaker = new CircuitBreaker({
@@ -99,77 +96,53 @@ function buildImagePinner(completionPort: PinCompletionPort): ImagePinner {
   });
 }
 
-const usingJobsSource = process.env.IMAGE_ENGINE_SOURCE === "jobs";
+const pool = getPool();
+const flashesDb = new PostgresFlashesDb(pool);
+const flashJobsDb = new FlashJobsDb(pool);
 
-if (usingJobsSource) {
-  const pool = getPool();
-  const flashesDb = new PostgresFlashesDb(pool);
-  const flashJobsDb = new FlashJobsDb(pool);
+const PIN_JOB_MAX_ATTEMPTS = intEnv("CONSUMER_MAX_ATTEMPTS", 10);
 
-  const PIN_JOB_MAX_ATTEMPTS = intEnv("CONSUMER_MAX_ATTEMPTS", 10);
+const jobWorker = new JobWorker(flashJobsDb, {
+  stage: "pin",
+  concurrency: intEnv("CONSUMER_CONCURRENCY", 1),
+  leaseMs: intEnv("PIN_JOB_LEASE_MS", 60000),
+  maxAttempts: PIN_JOB_MAX_ATTEMPTS,
+  pollIntervalMs: intEnv("PIN_JOB_POLL_INTERVAL_MS", 1000),
+  shouldRetry: () => true,
+  handle: async (job) => {
+    const flash: FlashReceivedPayload = {
+      flash_id: job.flash_id,
+      img: job.img,
+      city: job.city,
+      text: job.text,
+      player: job.player,
+      timestamp: Math.floor(job.timestamp.getTime() / 1000),
+      flash_count: job.flash_count,
+    };
+    const completionPort = new PostgresPinCompletionPort(pool, flashesDb, flashJobsDb, job.attempts);
+    await buildImagePinner(completionPort).handle(flash, "");
+  },
+});
+pinJobWorker = jobWorker;
 
-  const jobWorker = new JobWorker(flashJobsDb, {
-    stage: "pin",
-    concurrency: intEnv("CONSUMER_CONCURRENCY", 1),
-    leaseMs: intEnv("PIN_JOB_LEASE_MS", 60000),
-    maxAttempts: PIN_JOB_MAX_ATTEMPTS,
-    pollIntervalMs: intEnv("PIN_JOB_POLL_INTERVAL_MS", 1000),
-    shouldRetry: () => true,
-    handle: async (job) => {
-      const flash: FlashReceivedPayload = {
-        flash_id: job.flash_id,
-        img: job.img,
-        city: job.city,
-        text: job.text,
-        player: job.player,
-        timestamp: Math.floor(job.timestamp.getTime() / 1000),
-        flash_count: job.flash_count,
-      };
-      const completionPort = new PostgresPinCompletionPort(pool, flashesDb, flashJobsDb, job.attempts);
-      await buildImagePinner(completionPort).handle(flash, "");
+runService("image-engine", {
+  registry,
+  metricsPort: intEnv("METRICS_PORT", 9093),
+  healthChecks: {
+    pinJobs: () => ({ status: jobWorker.isRunning() ? "ok" : "error" }),
+    ipfs: () => ({ status: ipfsBreaker.state === "closed" ? "ok" : "degraded", message: `circuit ${ipfsBreaker.state}` }),
+    postgres: async () => {
+      await pool.query("SELECT 1");
+      return { status: "ok" };
     },
-  });
-  pinJobWorker = jobWorker;
-
-  runService("image-engine", {
-    registry,
-    metricsPort: intEnv("METRICS_PORT", 9093),
-    healthChecks: {
-      pinJobs: () => ({ status: jobWorker.isRunning() ? "ok" : "error" }),
-      ipfs: () => ({ status: ipfsBreaker.state === "closed" ? "ok" : "degraded", message: `circuit ${ipfsBreaker.state}` }),
-      postgres: async () => {
-        await pool.query("SELECT 1");
-        return { status: "ok" };
-      },
-    },
-    start: async (ctx) => {
-      ctx.onShutdown("postgres", () => closePool());
-      ctx.onShutdown("pin-job-worker", () => jobWorker.close());
-      jobWorker.start();
-      ctx.onShutdown(
-        "job-backlog",
-        observeJobBacklog(registry, pool, [{ stage: "pin", maxAttempts: PIN_JOB_MAX_ATTEMPTS }])
-      );
-    },
-  });
-} else {
-  const publisher = new FlashcastrPublisher("image-engine");
-  const completionPort = new RabbitMqPinCompletionPort(publisher);
-  const imagePinner = buildImagePinner(completionPort);
-  const consumer = new ImageEngineConsumer(imagePinner, { registry });
-
-  runService("image-engine", {
-    registry,
-    metricsPort: intEnv("METRICS_PORT", 9093),
-    healthChecks: {
-      rabbitmq: () => ({ status: consumer.isConsuming() ? "ok" : "error" }),
-      ipfs: () => ({ status: ipfsBreaker.state === "closed" ? "ok" : "degraded", message: `circuit ${ipfsBreaker.state}` }),
-    },
-    start: async (ctx) => {
-      ctx.onShutdown("publisher", () => publisher.close());
-      ctx.onShutdown("consumer", () => consumer.close());
-      await consumer.startConsuming();
-      ctx.onShutdown("queue-depths", observeQueueDepths(registry, [consumer]));
-    },
-  });
-}
+  },
+  start: async (ctx) => {
+    ctx.onShutdown("postgres", () => closePool());
+    ctx.onShutdown("pin-job-worker", () => jobWorker.close());
+    jobWorker.start();
+    ctx.onShutdown(
+      "job-backlog",
+      observeJobBacklog(registry, pool, [{ stage: "pin", maxAttempts: PIN_JOB_MAX_ATTEMPTS }])
+    );
+  },
+});

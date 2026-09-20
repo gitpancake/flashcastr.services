@@ -1,5 +1,22 @@
-import { describe, expect, it } from "vitest";
-import { formatSummary, selectPending } from "./promote-keep-set.js";
+import { describe, expect, it, vi } from "vitest";
+import { formatSummary, processCandidate, selectPending } from "./promote-keep-set.js";
+import type { CopyDestination, CopySource } from "./lib/promote-copy.js";
+
+const candidate = { flash_id: 42, ipfs_cid: "hash-42", image_tier: "feed" as const };
+
+function fakeSource(bytes: Buffer): CopySource {
+  return {
+    fetchFeedBytes: vi.fn().mockResolvedValue({ data: bytes, contentType: "image/jpeg" }),
+    fetchPinataBytes: vi.fn().mockResolvedValue({ data: bytes, contentType: "image/jpeg" }),
+  };
+}
+
+function fakeDestination(returnedBytes: Buffer): CopyDestination {
+  return {
+    putObject: vi.fn().mockResolvedValue(undefined),
+    getObject: vi.fn().mockResolvedValue(returnedBytes),
+  };
+}
 
 describe("selectPending", () => {
   it("excludes rows already at image_tier 'keep'", () => {
@@ -37,5 +54,44 @@ describe("formatSummary", () => {
     const output = formatSummary({ total: 2567, alreadyKept: 2567, promoted: 0, failures: [] });
 
     expect(output).toBe("Keep set: 2567 total, 2567 already kept, 0 promoted, 0 failed");
+  });
+});
+
+describe("processCandidate", () => {
+  it("flips the tier and reports promoted when the copy verifies", async () => {
+    const bytes = Buffer.from("image-bytes");
+    const setTier = vi.fn().mockResolvedValue(undefined);
+
+    const result = await processCandidate(candidate, fakeSource(bytes), fakeDestination(bytes), setTier);
+
+    expect(result).toEqual({ promoted: true });
+    expect(setTier).toHaveBeenCalledWith(42, "keep");
+  });
+
+  it("does not flip the tier and reports a failure when the write doesn't verify", async () => {
+    const setTier = vi.fn().mockResolvedValue(undefined);
+    const source = fakeSource(Buffer.from("original"));
+    const destination = fakeDestination(Buffer.from("corrupted"));
+
+    const result = await processCandidate(candidate, source, destination, setTier);
+
+    expect(result).toEqual({
+      promoted: false,
+      failure: { flashId: 42, reason: "sha256 mismatch after write" },
+    });
+    expect(setTier).not.toHaveBeenCalled();
+  });
+
+  it("catches a fetch error, reports it as a failure, and never throws", async () => {
+    const setTier = vi.fn().mockResolvedValue(undefined);
+    const source: CopySource = {
+      fetchFeedBytes: vi.fn().mockRejectedValue(new Error("404 from B2")),
+      fetchPinataBytes: vi.fn(),
+    };
+
+    const result = await processCandidate(candidate, source, fakeDestination(Buffer.from("x")), setTier);
+
+    expect(result).toEqual({ promoted: false, failure: { flashId: 42, reason: "404 from B2" } });
+    expect(setTier).not.toHaveBeenCalled();
   });
 });

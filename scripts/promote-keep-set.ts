@@ -109,6 +109,37 @@ function buildDestination(client: S3Client, bucket: string): CopyDestination {
   };
 }
 
+export interface ProcessResult {
+  promoted: boolean;
+  failure?: PromoteFailure;
+}
+
+/**
+ * The sweep's one safety gate: a tier flip only ever follows a verified
+ * copy, and one candidate's failure (a bad hash or a thrown fetch/write
+ * error) is recorded and skipped rather than aborting the run.
+ */
+export async function processCandidate(
+  candidate: KeepSetCandidate,
+  source: CopySource,
+  destination: CopyDestination,
+  setTier: (flashId: number, tier: string) => Promise<void>
+): Promise<ProcessResult> {
+  try {
+    const outcome = await copyCandidateToKeepTier(candidate, source, destination);
+    if (!outcome.verified) {
+      return { promoted: false, failure: { flashId: candidate.flash_id, reason: "sha256 mismatch after write" } };
+    }
+    await setTier(candidate.flash_id, "keep");
+    return { promoted: true };
+  } catch (error) {
+    return {
+      promoted: false,
+      failure: { flashId: candidate.flash_id, reason: error instanceof Error ? error.message : String(error) },
+    };
+  }
+}
+
 async function main(): Promise<void> {
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is not set");
 
@@ -145,17 +176,11 @@ async function main(): Promise<void> {
     let promoted = 0;
 
     for (const candidate of pending) {
-      try {
-        const outcome = await copyCandidateToKeepTier(candidate, source, destination);
-        if (!outcome.verified) {
-          failures.push({ flashId: candidate.flash_id, reason: "sha256 mismatch after write" });
-          continue;
-        }
-        await flashesDb.setImageTier(pool, candidate.flash_id, "keep");
-        promoted++;
-      } catch (error) {
-        failures.push({ flashId: candidate.flash_id, reason: error instanceof Error ? error.message : String(error) });
-      }
+      const result = await processCandidate(candidate, source, destination, (flashId, tier) =>
+        flashesDb.setImageTier(pool, flashId, tier)
+      );
+      if (result.promoted) promoted++;
+      else if (result.failure) failures.push(result.failure);
     }
 
     const summary: PromoteSummary = {

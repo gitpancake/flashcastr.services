@@ -11,6 +11,7 @@ export const typeDefs = `#graphql
     player: String
     img: String
     ipfs_cid: String
+    image_url: String
     text: String
     timestamp: String
     flash_count: String
@@ -107,6 +108,7 @@ export const typeDefs = `#graphql
     player: String
     img: String
     ipfs_cid: String
+    image_url: String
     text: String
     timestamp: String
     flash_count: String
@@ -121,6 +123,7 @@ export const typeDefs = `#graphql
     player: String
     img: String
     ipfs_cid: String
+    image_url: String
     timestamp: String
   }
 

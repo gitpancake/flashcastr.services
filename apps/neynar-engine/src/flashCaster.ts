@@ -13,8 +13,8 @@ function isSignerRevokedError(err: unknown): boolean {
   return message.includes("revoked") || message.includes("403") || message.includes("forbidden");
 }
 
-// Joined flash row a caller hands FlashCaster.handle — a structural subset shared by
-// both the RabbitMQ FlashStoredPayload path and the Postgres cast-job (ClaimedFlashJob) path.
+// Joined flash row a caller hands FlashCaster.handle — a structural subset of the
+// Postgres cast-job (ClaimedFlashJob) shape.
 export interface CastableFlash {
   flash_id: number;
   city: string;

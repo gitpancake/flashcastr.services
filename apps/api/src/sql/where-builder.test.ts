@@ -24,6 +24,22 @@ describe("WhereBuilder", () => {
     expect(page).toBe("LIMIT $2 OFFSET $3");
     expect(where.params).toEqual([1, 20, 40]);
   });
+
+  it("builds a keyset condition comparing (timestamp, id) tuples", () => {
+    const where = new WhereBuilder().keysetBefore("f.timestamp", "f.flash_id", "1700000000", "12345");
+    expect(where.clause()).toBe(
+      "WHERE (COALESCE(f.timestamp, 'infinity'::timestamp), f.flash_id) < (COALESCE(to_timestamp($1::bigint), 'infinity'::timestamp), $2::bigint)"
+    );
+    expect(where.params).toEqual(["1700000000", "12345"]);
+  });
+
+  it("passes a null timestampEpochSeconds through as a param", () => {
+    const where = new WhereBuilder().keysetBefore("f.timestamp", "f.flash_id", null, "12345");
+    expect(where.clause()).toBe(
+      "WHERE (COALESCE(f.timestamp, 'infinity'::timestamp), f.flash_id) < (COALESCE(to_timestamp($1::bigint), 'infinity'::timestamp), $2::bigint)"
+    );
+    expect(where.params).toEqual([null, "12345"]);
+  });
 });
 
 describe("clampLimit", () => {

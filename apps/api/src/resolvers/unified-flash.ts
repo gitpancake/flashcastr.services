@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 import { WhereBuilder, clampLimit, pageOffset } from "../sql/where-builder.js";
+import { decodeFlashCursor, encodeFlashCursor } from "../sql/cursor.js";
 
 interface UnifiedFlashRow {
   flash_id: string;
@@ -49,6 +50,7 @@ function mapRow(row: UnifiedFlashRow) {
     text: row.text,
     timestamp: row.timestamp,
     flash_count: row.flash_count,
+    cursor: encodeFlashCursor(row.timestamp, row.flash_id),
     farcaster_user: row.farcaster_fid
       ? {
           fid: row.farcaster_fid,
@@ -69,6 +71,19 @@ function mapRow(row: UnifiedFlashRow) {
   };
 }
 
+/** Keyset page: O(limit) regardless of depth. Ignores `page` — the cursor is the only position signal. */
+function buildCursorQuery(where: WhereBuilder, limit: number, cursor: string): string {
+  const { timestampEpochSeconds, flashId } = decodeFlashCursor(cursor);
+  where.keysetBefore("f.timestamp", "f.flash_id", timestampEpochSeconds, flashId);
+  return `${UNIFIED_FLASH_SELECT} ${where.clause()} ORDER BY COALESCE(f.timestamp, 'infinity'::timestamp) DESC, f.flash_id DESC ${where.limit(limit)}`;
+}
+
+/** Legacy LIMIT/OFFSET page: unchanged behavior for existing callers. */
+function buildPageQuery(where: WhereBuilder, limit: number, page: number | undefined): string {
+  const pagination = where.paginate(limit, pageOffset(page, limit));
+  return `${UNIFIED_FLASH_SELECT} ${where.clause()} ORDER BY f.timestamp DESC ${pagination}`;
+}
+
 export function createUnifiedFlashResolvers(pool: Pool) {
   return {
     Query: {
@@ -78,15 +93,18 @@ export function createUnifiedFlashResolvers(pool: Pool) {
         return mapRow(result.rows[0]);
       },
 
-      unifiedFlashes: async (_: unknown, args: { page?: number; limit?: number; city?: string; player?: string }) => {
+      unifiedFlashes: async (
+        _: unknown,
+        args: { page?: number; limit?: number; city?: string; player?: string; cursor?: string }
+      ) => {
         const limit = clampLimit(args.limit, DEFAULT_LIMIT);
         const where = new WhereBuilder().eqIgnoreCase("f.city", args.city).eqIgnoreCase("f.player", args.player);
-        const pagination = where.paginate(limit, pageOffset(args.page, limit));
 
-        const result = await pool.query<UnifiedFlashRow>(
-          `${UNIFIED_FLASH_SELECT} ${where.clause()} ORDER BY f.timestamp DESC ${pagination}`,
-          where.params
-        );
+        const query = args.cursor
+          ? buildCursorQuery(where, limit, args.cursor)
+          : buildPageQuery(where, limit, args.page);
+
+        const result = await pool.query<UnifiedFlashRow>(query, where.params);
         return result.rows.map(mapRow);
       },
     },

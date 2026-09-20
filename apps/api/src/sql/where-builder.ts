@@ -50,6 +50,22 @@ export class WhereBuilder {
     return this;
   }
 
+  /**
+   * Row-wise tuple comparison for keyset pagination: strictly before the
+   * given (timestamp, id) cursor, ordered the same way as `ORDER BY
+   * COALESCE(timestamp, 'infinity') DESC, id DESC`. Matches
+   * idx_flashes_timestamp_id_keyset's expression text so the planner can use
+   * it instead of an OFFSET-style scan.
+   */
+  keysetBefore(timestampColumn: string, idColumn: string, timestampEpochSeconds: string | null, id: string): this {
+    const tsParam = this.placeholder(timestampEpochSeconds);
+    const idParam = this.placeholder(id);
+    this.conditions.push(
+      `(COALESCE(${timestampColumn}, 'infinity'::timestamp), ${idColumn}) < (COALESCE(to_timestamp(${tsParam}::bigint), 'infinity'::timestamp), ${idParam}::bigint)`
+    );
+    return this;
+  }
+
   /** `WHERE a AND b`, or an empty string when there are no conditions. */
   clause(): string {
     return this.conditions.length > 0 ? `WHERE ${this.conditions.join(" AND ")}` : "";

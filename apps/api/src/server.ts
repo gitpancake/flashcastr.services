@@ -12,7 +12,7 @@ import { makeExecutableSchema } from "@graphql-tools/schema";
 import { useServer } from "graphql-ws/use/ws";
 import { WebSocketServer } from "ws";
 
-import { getPool, closePool } from "@flashcastr/database";
+import { getPool, closePool, type ImageUrlConfig } from "@flashcastr/database";
 import { intEnv, optionalEnv, requireEnv } from "@flashcastr/config";
 import { createLogger } from "@flashcastr/logger";
 
@@ -23,6 +23,8 @@ import { InMemoryPubSub } from "./pubsub.js";
 import { PostgresSubscriptionBridge } from "./subscription-bridge.js";
 import { createSubscriptionMetricsHooks } from "./subscription-metrics.js";
 import { scheduleGaugeUpdates } from "./gauges.js";
+import { createB2TokenProvider } from "./b2/tokenProvider.js";
+import { createImageRedirectHandler } from "./imageRedirect.js";
 import {
   registry,
   startMetricsServer,
@@ -38,6 +40,10 @@ const METRICS_PORT = intEnv("METRICS_PORT", 9094);
 const TRUST_PROXY_HOPS = intEnv("TRUST_PROXY_HOPS", 1);
 const CORS_ORIGINS = optionalEnv("CORS_ORIGINS", "");
 const INTROSPECTION_ENABLED = optionalEnv("GRAPHQL_INTROSPECTION", "true") === "true";
+const API_PUBLIC_BASE = optionalEnv("API_PUBLIC_BASE", "http://localhost:4000");
+const ORIGIN = optionalEnv("ORIGIN", "https://api.space-invaders.com");
+const B2_DOWNLOAD_BASE = optionalEnv("B2_DOWNLOAD_BASE", "https://f004.backblazeb2.com");
+const B2_BUCKET = optionalEnv("B2_BUCKET", "flashcastr-images");
 
 function corsOptions() {
   if (!CORS_ORIGINS) return undefined;
@@ -52,8 +58,19 @@ function rootFieldName(requestContext: { operation?: { selectionSet: { selection
 const pool = getPool();
 const pubsub = new InMemoryPubSub();
 
+const imageUrlConfig: ImageUrlConfig = {
+  apiPublicBase: API_PUBLIC_BASE,
+  origin: ORIGIN,
+};
+
+const b2TokenProvider = createB2TokenProvider({
+  keyId: requireEnv("B2_API_KEY_ID"),
+  applicationKey: requireEnv("B2_API_KEY"),
+  bucketId: requireEnv("B2_BUCKET_ID"),
+});
+
 // Build executable schema for WebSocket subscriptions
-const resolvers = createResolvers(pool, pubsub);
+const resolvers = createResolvers(pool, pubsub, imageUrlConfig);
 const schema = makeExecutableSchema({ typeDefs, resolvers });
 
 // Express + HTTP server
@@ -146,6 +163,14 @@ async function main() {
   scheduleGaugeUpdates(pool, log);
 
   const subscriptionBridge = await startSubscriptionBridge(pubsub);
+
+  app.get(
+    "/i/:flash_id",
+    createImageRedirectHandler(pool, b2TokenProvider, {
+      b2DownloadBase: B2_DOWNLOAD_BASE,
+      b2Bucket: B2_BUCKET,
+    })
+  );
 
   app.get("/health", async (_req, res) => {
     const database = await databaseHealth();

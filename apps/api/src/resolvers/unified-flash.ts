@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { buildImageUrl, type ImageUrlConfig } from "@flashcastr/database";
 import { WhereBuilder, clampLimit, pageOffset } from "../sql/where-builder.js";
 import { decodeFlashCursor, encodeFlashCursor } from "../sql/cursor.js";
 
@@ -8,6 +9,7 @@ interface UnifiedFlashRow {
   player: string | null;
   img: string | null;
   ipfs_cid: string | null;
+  image_tier: string | null;
   text: string | null;
   timestamp: string | null;
   flash_count: string | null;
@@ -26,7 +28,7 @@ const DEFAULT_LIMIT = 20;
 
 const UNIFIED_FLASH_SELECT = `
   SELECT
-    f.flash_id::text as flash_id, f.city, f.player, f.img, f.ipfs_cid,
+    f.flash_id::text as flash_id, f.city, f.player, f.img, f.ipfs_cid, f.image_tier,
     f.text, EXTRACT(EPOCH FROM f.timestamp)::bigint::text as timestamp, f.flash_count,
     ff.user_fid as farcaster_fid, ff.user_username as farcaster_username,
     ff.user_pfp_url as farcaster_pfp_url, ff.cast_hash as farcaster_cast_hash,
@@ -40,13 +42,14 @@ const UNIFIED_FLASH_SELECT = `
   LEFT JOIN flash_identifications fi ON f.ipfs_cid = fi.source_ipfs_cid
 `;
 
-function mapRow(row: UnifiedFlashRow) {
+function mapRow(row: UnifiedFlashRow, imageUrlConfig: ImageUrlConfig) {
   return {
     flash_id: row.flash_id,
     city: row.city,
     player: row.player,
     img: row.img,
     ipfs_cid: row.ipfs_cid,
+    image_url: buildImageUrl({ flash_id: row.flash_id, image_tier: row.image_tier, img: row.img }, imageUrlConfig),
     text: row.text,
     timestamp: row.timestamp,
     flash_count: row.flash_count,
@@ -84,13 +87,13 @@ function buildPageQuery(where: WhereBuilder, limit: number, page: number | undef
   return `${UNIFIED_FLASH_SELECT} ${where.clause()} ORDER BY f.timestamp DESC ${pagination}`;
 }
 
-export function createUnifiedFlashResolvers(pool: Pool) {
+export function createUnifiedFlashResolvers(pool: Pool, imageUrlConfig: ImageUrlConfig) {
   return {
     Query: {
       unifiedFlash: async (_: unknown, args: { flash_id: string }) => {
         const result = await pool.query<UnifiedFlashRow>(`${UNIFIED_FLASH_SELECT} WHERE f.flash_id = $1`, [args.flash_id]);
         if (result.rows.length === 0) return null;
-        return mapRow(result.rows[0]);
+        return mapRow(result.rows[0], imageUrlConfig);
       },
 
       unifiedFlashes: async (
@@ -105,7 +108,7 @@ export function createUnifiedFlashResolvers(pool: Pool) {
           : buildPageQuery(where, limit, args.page);
 
         const result = await pool.query<UnifiedFlashRow>(query, where.params);
-        return result.rows.map(mapRow);
+        return result.rows.map((row) => mapRow(row, imageUrlConfig));
       },
     },
   };

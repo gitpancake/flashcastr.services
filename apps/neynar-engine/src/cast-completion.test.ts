@@ -17,6 +17,7 @@ function castedPayload(overrides: Partial<FlashCastedPayload> = {}): FlashCasted
     ipfs_url: "https://gateway.pinata.cloud/ipfs/bafypinned",
     db_flash_id: 1,
     stored_at: 1_700_000_100,
+    image_url: null,
     cast_hash: "0xhash",
     user_fid: 42,
     user_username: "player-one",

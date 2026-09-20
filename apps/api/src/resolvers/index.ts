@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import type { ImageUrlConfig } from "@flashcastr/database";
 import type { PubSubEngine } from "../pubsub.js";
 import { createUserResolvers } from "./users.js";
 import { createFlashResolvers } from "./flashes.js";
@@ -9,15 +10,15 @@ import { createFlashIdentificationResolvers } from "./flash-identifications.js";
 import { createUnifiedFlashResolvers } from "./unified-flash.js";
 import { createSubscriptionResolvers } from "./subscriptions.js";
 
-export function createResolvers(pool: Pool, pubsub: PubSubEngine) {
+export function createResolvers(pool: Pool, pubsub: PubSubEngine, imageUrlConfig: ImageUrlConfig) {
   const modules = [
     createUserResolvers(pool),
-    createFlashResolvers(pool),
+    createFlashResolvers(pool, imageUrlConfig),
     createCityResolvers(pool),
     createLeaderboardResolvers(pool),
     createProgressResolvers(pool),
     createFlashIdentificationResolvers(pool),
-    createUnifiedFlashResolvers(pool),
+    createUnifiedFlashResolvers(pool, imageUrlConfig),
     createSubscriptionResolvers(pubsub),
   ];
 

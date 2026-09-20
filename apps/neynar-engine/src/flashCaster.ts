@@ -120,6 +120,9 @@ export class FlashCaster {
       ipfs_url: flash.ipfs_cid ? `${PINATA_GATEWAY}/${flash.ipfs_cid}` : "",
       db_flash_id: flash.flash_id,
       stored_at: Date.now(),
+      // Not computed here: notifyFlashCasted doesn't read image_url off this
+      // payload today (only notifyFlashStored does, see libs/database/src/notify.ts).
+      image_url: null,
       cast_hash: castHash,
       user_fid: appUser.fid,
       user_username: neynarUser.username,

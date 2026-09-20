@@ -56,6 +56,16 @@ function buildPinnerForStore(store: string): { pinner: Pinner; gatewayUrl: strin
 
 const { pinner, gatewayUrl, imageTier } = buildPinnerForStore(IMAGE_STORE);
 
+// Only required once a tier is actually live (IMAGE_STORE=b2) -- pinata
+// deployments never build a route URL, so they'd otherwise crash on a var
+// they don't need. Left unset with a tier active, this would previously
+// silently notify a bare relative path with no scheme/host; requireEnv here
+// turns that into a boot-time crash instead.
+const IMAGE_URL_CONFIG = {
+  apiPublicBase: imageTier ? requireEnv("API_PUBLIC_BASE") : "",
+  origin: BASE_URL,
+};
+
 const IPFS_FAILURE_THRESHOLD = 30;
 const IPFS_OPEN_DURATION_MS = 300000;
 const MAX_CIRCUIT_RETRY_WAIT_MS = 30000;
@@ -150,7 +160,14 @@ const jobWorker = new JobWorker(flashJobsDb, {
       timestamp: Math.floor(job.timestamp.getTime() / 1000),
       flash_count: job.flash_count,
     };
-    const completionPort = new PostgresPinCompletionPort(pool, flashesDb, flashJobsDb, job.attempts, imageTier);
+    const completionPort = new PostgresPinCompletionPort(
+      pool,
+      flashesDb,
+      flashJobsDb,
+      job.attempts,
+      imageTier,
+      IMAGE_URL_CONFIG
+    );
     await buildImagePinner(completionPort).handle(flash, "");
   },
 });

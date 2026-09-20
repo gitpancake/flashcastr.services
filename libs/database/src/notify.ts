@@ -13,6 +13,7 @@ export interface FlashStoredNotification {
   img: string;
   ipfs_cid: string;
   timestamp: string;
+  image_url: string | null;
 }
 
 export interface FlashCastedNotification {
@@ -32,6 +33,7 @@ export async function notifyFlashStored(executor: Pool | PoolClient, payload: Fl
     img: payload.img,
     ipfs_cid: payload.ipfs_cid,
     timestamp: String(payload.timestamp),
+    image_url: payload.image_url,
   };
   await executor.query("SELECT pg_notify($1, $2)", [NOTIFY_CHANNELS.FLASH_STORED, JSON.stringify(notification)]);
 }

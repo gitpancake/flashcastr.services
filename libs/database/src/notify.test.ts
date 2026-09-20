@@ -16,6 +16,7 @@ function buildFlashStoredPayload(overrides: Partial<FlashStoredPayload> = {}): F
     ipfs_url: "https://ipfs.io/ipfs/bafybeitest",
     db_flash_id: 42,
     stored_at: 1_700_000_005,
+    image_url: "https://api.test/i/111",
     ...overrides,
   };
 }
@@ -53,7 +54,18 @@ describe("notifyFlashStored", () => {
       img: "https://example.com/img.png",
       ipfs_cid: "bafybeitest",
       timestamp: "1700000000",
+      image_url: "https://api.test/i/111",
     });
+  });
+
+  it("preserves a null image_url rather than dropping it", async () => {
+    const executor = fakeExecutor();
+    const payload = buildFlashStoredPayload({ image_url: null });
+
+    await notifyFlashStored(executor, payload);
+
+    const [, params] = (executor.query as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(JSON.parse(params[1]).image_url).toBeNull();
   });
 });
 

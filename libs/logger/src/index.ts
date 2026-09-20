@@ -47,6 +47,21 @@ function createLokiDestination(): LokiDestination | null {
   };
 }
 
+const openLokiDestinations = new Set<LokiDestination>();
+
+async function closeLokiDestination(destination: LokiDestination): Promise<void> {
+  if (!openLokiDestinations.delete(destination)) return;
+  await destination.flush();
+}
+
+// pino-loki's batch timer is a plain setInterval with no unref(), so importing
+// anything that builds a logger keeps the event loop alive forever. Long-lived
+// services never notice; a short-lived one (scripts/migrate.ts on the api's
+// Railway pre-deploy step) hangs after its last line until the step times out.
+export async function closeLoggers(): Promise<void> {
+  await Promise.all([...openLokiDestinations].map(closeLokiDestination));
+}
+
 function serializeErrorValues(obj: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(obj).map(([key, value]) => [
@@ -80,6 +95,7 @@ export function createLogger(serviceName: string, destination?: pino.Destination
   // sharing one stream would let one logger's flush silently kill another's
   // still-in-flight writes.
   const loki = destination ? null : createLokiDestination();
+  if (loki) openLokiDestinations.add(loki);
   const pinoLogger = pino(
     {
       level: process.env.LOG_LEVEL || "info",
@@ -116,7 +132,7 @@ export function createLogger(serviceName: string, destination?: pino.Destination
     warn: (...args: unknown[]) => log("warn", args),
     error: (...args: unknown[]) => log("error", args),
     debug: (...args: unknown[]) => log("debug", args),
-    flush: () => (loki ? loki.flush() : Promise.resolve()),
+    flush: () => (loki ? closeLokiDestination(loki) : Promise.resolve()),
   };
 }
 

@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { createLogger } from "./index.js";
+import { closeLoggers, createLogger } from "./index.js";
+
+function countActiveTimers(): number {
+  return process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length;
+}
+
+function settle(): Promise<void> {
+  return new Promise((resolve) => setImmediate(() => resolve()));
+}
 
 function captureLines() {
   const chunks: string[] = [];
@@ -132,5 +140,27 @@ describe("createLogger", () => {
     } finally {
       delete process.env.LOKI_URL;
     }
+  });
+
+  it("closeLoggers releases the Loki batch timer that keeps a short-lived process alive", async () => {
+    process.env.LOKI_URL = "https://loki-user:loki-pass@logger-unit-test.invalid:3100";
+    try {
+      const timersBefore = countActiveTimers();
+      createLogger("migrate");
+      await settle();
+
+      expect(countActiveTimers()).toBeGreaterThan(timersBefore);
+
+      await closeLoggers();
+      await settle();
+
+      expect(countActiveTimers()).toBe(timersBefore);
+    } finally {
+      delete process.env.LOKI_URL;
+    }
+  });
+
+  it("closeLoggers resolves when no Loki logger was ever created", async () => {
+    await expect(closeLoggers()).resolves.toBeUndefined();
   });
 });

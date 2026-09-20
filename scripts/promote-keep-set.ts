@@ -25,7 +25,7 @@ import axios from "axios";
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getPool, closePool, PostgresFlashesDb, type KeepSetCandidate } from "@flashcastr/database";
 import { requireEnv, intEnv, optionalEnv } from "@flashcastr/config";
-import { createLogger } from "@flashcastr/logger";
+import { closeLoggers, createLogger } from "@flashcastr/logger";
 import { copyCandidateToKeepTier, type CopyDestination, type CopySource } from "./lib/promote-copy.js";
 
 const log = createLogger("promote-keep-set");
@@ -224,6 +224,7 @@ async function main(): Promise<void> {
     if (failures.length > 0) process.exitCode = 1;
   } finally {
     await closePool();
+    await closeLoggers();
   }
 }
 

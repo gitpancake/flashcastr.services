@@ -28,6 +28,7 @@ import { config } from "dotenv";
 config();
 
 import { getPool, loadMigrations, resolveMigrationsDir, runMigrations, closePool } from "@flashcastr/database";
+import { closeLoggers } from "@flashcastr/logger";
 
 const MIGRATIONS_DIR = resolveMigrationsDir(__dirname);
 
@@ -49,6 +50,7 @@ async function main(): Promise<void> {
     }
   } finally {
     await closePool();
+    await closeLoggers();
   }
 }
 

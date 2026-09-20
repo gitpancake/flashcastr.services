@@ -4,6 +4,7 @@ WORKDIR /app
 COPY package.json package-lock.json tsconfig.base.json ./
 COPY libs/ ./libs/
 COPY apps/neynar-engine/ ./apps/neynar-engine/
+COPY scripts/lib/ ./scripts/lib/
 
 RUN npm ci
 

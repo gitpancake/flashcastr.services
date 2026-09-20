@@ -192,6 +192,15 @@ export class PostgresFlashesDb extends Postgres<Flash> {
     await client.query(`UPDATE flashes SET ipfs_cid = $2 WHERE flash_id = $1`, [flashId, ipfsCid]);
   }
 
+  async updateImageRef(client: Pool | PoolClient, flashId: number, hash: string, tier: string): Promise<void> {
+    if (!hash) return;
+    await client.query(`UPDATE flashes SET ipfs_cid = $2, image_tier = $3 WHERE flash_id = $1`, [
+      flashId,
+      hash,
+      tier,
+    ]);
+  }
+
   private async insertIndividually(flashes: Flash[], client: Pool | PoolClient = this.pool): Promise<Flash[]> {
     const successful: Flash[] = [];
     for (const flash of flashes) {

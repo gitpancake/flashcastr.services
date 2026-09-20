@@ -6,6 +6,13 @@ export interface Migration {
   sql: string;
 }
 
+export function resolveMigrationsDir(
+  moduleDir: string,
+  env: Record<string, string | undefined> = process.env
+): string {
+  return env.MIGRATIONS_DIR ?? join(moduleDir, "..", "migrations");
+}
+
 export function loadMigrations(dir: string): Migration[] {
   return readdirSync(dir)
     .filter((file) => file.endsWith(".sql"))

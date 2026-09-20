@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadMigrations, runMigrations, type MigratorPool } from "./migrator.js";
+import { loadMigrations, resolveMigrationsDir, runMigrations, type MigratorPool } from "./migrator.js";
 
 class FakePool implements MigratorPool {
   appliedNames = new Set<string>();
@@ -74,6 +74,19 @@ describe("loadMigrations", () => {
 
     expect(migrations.map((m) => m.name)).toEqual(["0001_first.sql", "0002_second.sql"]);
     expect(migrations[0].sql).toBe("SELECT 1;");
+  });
+});
+
+describe("resolveMigrationsDir", () => {
+  it("resolves migrations/ as a sibling of the module's parent directory by default", () => {
+    expect(resolveMigrationsDir("/app/scripts", {})).toBe(join("/app/scripts", "..", "migrations"));
+    expect(resolveMigrationsDir("/app/dist", {})).toBe(join("/app/dist", "..", "migrations"));
+  });
+
+  it("prefers the MIGRATIONS_DIR env override when set", () => {
+    expect(resolveMigrationsDir("/app/dist", { MIGRATIONS_DIR: "/custom/migrations" })).toBe(
+      "/custom/migrations"
+    );
   });
 });
 

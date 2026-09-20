@@ -19,15 +19,17 @@
  *   2. Deploy the code that no longer references the dropped column.
  *   3. npm run migrate                 (applies 0002 for real)
  *
- * Requires DATABASE_URL.
+ * Requires DATABASE_URL. Migrations are read from `MIGRATIONS_DIR` next to
+ * this file's parent directory (`scripts/../migrations` from source,
+ * `dist/../migrations` from the bundled image); set MIGRATIONS_DIR to
+ * override.
  */
 import { config } from "dotenv";
 config();
 
-import { join } from "node:path";
-import { getPool, loadMigrations, runMigrations, closePool } from "@flashcastr/database";
+import { getPool, loadMigrations, resolveMigrationsDir, runMigrations, closePool } from "@flashcastr/database";
 
-const MIGRATIONS_DIR = join(__dirname, "..", "migrations");
+const MIGRATIONS_DIR = resolveMigrationsDir(__dirname);
 
 async function main(): Promise<void> {
   if (!process.env.DATABASE_URL) {

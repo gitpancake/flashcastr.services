@@ -25,11 +25,6 @@ const registry = createMetricsRegistry("image-engine");
 const BASE_URL = "https://api.space-invaders.com";
 const PINATA_GATEWAY = "https://gateway.pinata.cloud/ipfs";
 
-const IMAGE_URL_CONFIG = {
-  apiPublicBase: optionalEnv("API_PUBLIC_BASE", ""),
-  origin: BASE_URL,
-};
-
 // Dark launch (platform/backblaze-image-storage/01-b2-pinner-and-tier): the
 // pinata path is byte-for-byte today's behavior; b2 is wired but inert until
 // an operator sets IMAGE_STORE=b2 on this service.
@@ -60,6 +55,16 @@ function buildPinnerForStore(store: string): { pinner: Pinner; gatewayUrl: strin
 }
 
 const { pinner, gatewayUrl, imageTier } = buildPinnerForStore(IMAGE_STORE);
+
+// Only required once a tier is actually live (IMAGE_STORE=b2) -- pinata
+// deployments never build a route URL, so they'd otherwise crash on a var
+// they don't need. Left unset with a tier active, this would previously
+// silently notify a bare relative path with no scheme/host; requireEnv here
+// turns that into a boot-time crash instead.
+const IMAGE_URL_CONFIG = {
+  apiPublicBase: imageTier ? requireEnv("API_PUBLIC_BASE") : "",
+  origin: BASE_URL,
+};
 
 const IPFS_FAILURE_THRESHOLD = 30;
 const IPFS_OPEN_DURATION_MS = 300000;

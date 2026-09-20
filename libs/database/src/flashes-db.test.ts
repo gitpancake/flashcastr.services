@@ -3,6 +3,36 @@ import type { Flash } from "@flashcastr/shared-types";
 import { describe, expect, it } from "vitest";
 import { PostgresFlashesDb } from "./flashes-db.js";
 
+class FakeKeepSetPool {
+  calls: Array<{ sql: string; params: unknown[] }> = [];
+
+  async query(sql: string, params: unknown[] = []) {
+    this.calls.push({ sql, params });
+    return {
+      rows: [{ flash_id: "12345", ipfs_cid: "bafy123", image_tier: "keep" }],
+    };
+  }
+}
+
+describe("PostgresFlashesDb.getKeepSetCandidates", () => {
+  it("selects the union of the three keep-set branches and returns typed rows", async () => {
+    const pool = new FakeKeepSetPool();
+    const db = new PostgresFlashesDb(pool as unknown as Pool);
+
+    const rows = await db.getKeepSetCandidates();
+
+    expect(pool.calls).toHaveLength(1);
+    const sql = pool.calls[0].sql;
+    expect(sql).toMatch(/flash_id IN \(SELECT flash_id FROM flashcastr_flashes\)/);
+    expect(sql).toMatch(
+      /LOWER\(player\) IN \(SELECT LOWER\(username\) FROM flashcastr_users WHERE username IS NOT NULL\)/
+    );
+    expect(sql).toMatch(/flashcastr_flashes ff/);
+    expect(sql).toMatch(/JOIN flashes f2 ON f2\.flash_id = ff\.flash_id/);
+    expect(rows).toEqual([{ flash_id: 12345, ipfs_cid: "bafy123", image_tier: "keep" }]);
+  });
+});
+
 /**
  * node-postgres returns bigint (int8) columns as strings to avoid silent precision
  * loss, but returns integer (int4) columns as real numbers. This fake mirrors that:
@@ -81,6 +111,20 @@ describe("PostgresFlashesDb.updateImageRef", () => {
     await db.updateImageRef(pool as unknown as Pool, 111, "", "b2");
 
     expect(pool.calls).toHaveLength(0);
+  });
+});
+
+describe("PostgresFlashesDb.setImageTier", () => {
+  it("updates only image_tier for the given flash_id", async () => {
+    const pool = new FakeUpdateIpfsCidPool();
+    const db = new PostgresFlashesDb(pool as unknown as Pool);
+
+    await db.setImageTier(pool as unknown as Pool, 111, "keep");
+
+    expect(pool.calls).toHaveLength(1);
+    expect(pool.calls[0].sql).toMatch(/UPDATE flashes SET image_tier/);
+    expect(pool.calls[0].sql).not.toMatch(/ipfs_cid/);
+    expect(pool.calls[0].params).toEqual([111, "keep"]);
   });
 });
 

@@ -1,6 +1,6 @@
 export { createPool, getPool, closePool } from "./pool.js";
 export { Postgres, withTransaction } from "./postgres-base.js";
-export { PostgresFlashesDb } from "./flashes-db.js";
+export { PostgresFlashesDb, type KeepSetCandidate } from "./flashes-db.js";
 export { FlashcastrFlashesDb, type FailedCastRow } from "./flashcastr-flashes-db.js";
 export { FlashcastrUsersDb } from "./flashcastr-users-db.js";
 export { FlashIdentificationsDb } from "./flash-identifications-db.js";

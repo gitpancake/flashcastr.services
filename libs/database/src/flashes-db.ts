@@ -5,6 +5,12 @@ import { Postgres } from "./postgres-base.js";
 
 const log = createLogger("database");
 
+export interface KeepSetCandidate {
+  flash_id: number;
+  ipfs_cid: string;
+  image_tier: string | null;
+}
+
 export class PostgresFlashesDb extends Postgres<Flash> {
   constructor(pool: Pool) {
     super(pool);
@@ -187,9 +193,42 @@ export class PostgresFlashesDb extends Postgres<Flash> {
     return rows.map((r) => r.flash_id);
   }
 
+  /**
+   * The keep set: every flash worth preserving past the feed tier's 12-month
+   * lifecycle. Union of three branches (see epic `backblaze-image-storage`
+   * Step 6) — (a) app-cast flashes, (b) flashes under a currently-registered
+   * player name, (c) flashes under any player name an app user has ever cast
+   * under, recovered via a self-join, which survives username renames.
+   * `flashcastr_users` has no `deleted` column in production; do not filter
+   * on it.
+   */
+  async getKeepSetCandidates(): Promise<KeepSetCandidate[]> {
+    const sql = `
+      SELECT flash_id::int AS flash_id, ipfs_cid, image_tier
+      FROM flashes
+      WHERE flash_id IN (SELECT flash_id FROM flashcastr_flashes)
+         OR LOWER(player) IN (SELECT LOWER(username) FROM flashcastr_users WHERE username IS NOT NULL)
+         OR LOWER(player) IN (
+           SELECT DISTINCT LOWER(f2.player)
+           FROM flashcastr_flashes ff
+           JOIN flashes f2 ON f2.flash_id = ff.flash_id
+         )
+    `;
+    const rows = await this.query<{ flash_id: number | string; ipfs_cid: string; image_tier: string | null }>(sql);
+    return rows.map((row) => ({
+      flash_id: Number(row.flash_id),
+      ipfs_cid: row.ipfs_cid,
+      image_tier: row.image_tier,
+    }));
+  }
+
   async updateIpfsCid(client: Pool | PoolClient, flashId: number, ipfsCid: string): Promise<void> {
     if (!ipfsCid) return;
     await client.query(`UPDATE flashes SET ipfs_cid = $2 WHERE flash_id = $1`, [flashId, ipfsCid]);
+  }
+
+  async setImageTier(client: Pool | PoolClient, flashId: number, tier: string): Promise<void> {
+    await client.query(`UPDATE flashes SET image_tier = $2 WHERE flash_id = $1`, [flashId, tier]);
   }
 
   async updateImageRef(client: Pool | PoolClient, flashId: number, hash: string, tier: string): Promise<void> {

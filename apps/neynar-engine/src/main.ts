@@ -6,6 +6,7 @@ import {
   FlashcastrFlashesDb,
   FlashcastrUsersDb,
   FlashJobsDb,
+  PostgresFlashesDb,
   withTransaction,
   closePool,
   notifyFlashCasted,
@@ -15,9 +16,10 @@ import { decrypt } from "@flashcastr/crypto";
 import { createMetricsRegistry, Counter } from "@flashcastr/metrics";
 import { runService } from "@flashcastr/runtime";
 import { createLogger } from "@flashcastr/logger";
-import { requireEnv, intEnv } from "@flashcastr/config";
+import { requireEnv, intEnv, optionalEnv } from "@flashcastr/config";
 import { NeynarCastGateway } from "./neynarCastGateway.js";
-import { FlashCaster, type CastableFlash } from "./flashCaster.js";
+import { FlashCaster, type CastableFlash, type ImageTierStore } from "./flashCaster.js";
+import { B2PromoteGateway } from "./b2PromoteGateway.js";
 import { completeCastJob } from "./cast-completion.js";
 
 const log = createLogger("neynar-engine");
@@ -36,7 +38,22 @@ const pool = getPool();
 const flashcastrFlashesDb = new FlashcastrFlashesDb(pool);
 const flashcastrUsersDb = new FlashcastrUsersDb(pool);
 const flashJobsDb = new FlashJobsDb(pool);
+const flashesDb = new PostgresFlashesDb(pool);
 const castGateway = new NeynarCastGateway({ apiKey: NEYNAR_API_KEY });
+
+// Dark until IMAGE_STORE=b2 is live: optionalEnv (not requireEnv) lets the
+// service boot with these unset — promoteFeedToKeep is only ever reached
+// when a row's image_tier is already 'feed'.
+const promoteGateway = new B2PromoteGateway({
+  endpoint: optionalEnv("B2_S3_ENDPOINT", ""),
+  region: optionalEnv("B2_REGION", ""),
+  bucket: optionalEnv("B2_BUCKET", ""),
+  keyId: optionalEnv("B2_PROMOTE_KEY_ID", ""),
+  applicationKey: optionalEnv("B2_PROMOTE_KEY", ""),
+});
+const imageTier: ImageTierStore = {
+  markKept: (flashId) => flashesDb.setImageTier(pool, flashId, "keep"),
+};
 
 const flashCaster = new FlashCaster({
   users: flashcastrUsersDb,
@@ -45,6 +62,8 @@ const flashCaster = new FlashCaster({
   decrypt,
   signerEncryptionKey: SIGNER_ENCRYPTION_KEY,
   castsPublished,
+  promoteGateway,
+  imageTier,
 });
 
 // Non-retryable failures for castJobWorker's shouldRetry.
@@ -79,6 +98,7 @@ const castJobWorker = new JobWorker(flashJobsDb, {
       text: job.text,
       timestamp: Math.floor(job.timestamp.getTime() / 1000),
       flash_count: job.flash_count,
+      image_tier: job.image_tier,
     };
     const castedPayload = await flashCaster.handle(castableFlash);
 

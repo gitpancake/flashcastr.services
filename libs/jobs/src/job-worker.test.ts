@@ -30,6 +30,7 @@ function claimedJob(overrides: Partial<ClaimedFlashJob> = {}): ClaimedFlashJob {
     text: "flash text",
     timestamp: new Date(),
     flash_count: "1",
+    image_tier: null,
     ...overrides,
   };
 }

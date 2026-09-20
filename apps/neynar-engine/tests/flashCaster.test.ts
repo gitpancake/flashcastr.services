@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { FlashcastrFlash, FlashcastrUser } from "@flashcastr/shared-types";
 import type { FlashcastrFlashesDb, FlashcastrUsersDb } from "@flashcastr/database";
 import type { CastGateway } from "../src/castGateway.js";
-import { FlashCaster } from "../src/flashCaster.js";
+import type { PromoteGateway } from "../src/promoteGateway.js";
+import { FlashCaster, type ImageTierStore } from "../src/flashCaster.js";
 
 const SIGNER_ENCRYPTION_KEY = "test-key";
 
@@ -19,6 +20,7 @@ function buildPayload(overrides: Partial<Parameters<FlashCaster["handle"]>[0]> =
     ipfs_url: "ipfs://cid123",
     db_flash_id: 1,
     stored_at: 1700000001,
+    image_tier: null,
     ...overrides,
   };
 }
@@ -61,11 +63,27 @@ function buildFlashesDb(overrides: Partial<FlashcastrFlashesDb> = {}) {
   } as unknown as FlashcastrFlashesDb;
 }
 
+function buildPromoteGateway(overrides: Partial<PromoteGateway> = {}): PromoteGateway {
+  return {
+    promoteFeedToKeep: vi.fn(async () => undefined),
+    ...overrides,
+  };
+}
+
+function buildImageTierStore(overrides: Partial<ImageTierStore> = {}): ImageTierStore {
+  return {
+    markKept: vi.fn(async () => undefined),
+    ...overrides,
+  };
+}
+
 function buildFlashCaster(overrides: {
   users?: FlashcastrUsersDb;
   flashes?: FlashcastrFlashesDb;
   gateway?: CastGateway;
   decrypt?: (encryptedData: string, key: string) => string;
+  promoteGateway?: PromoteGateway;
+  imageTier?: ImageTierStore;
 } = {}) {
   return new FlashCaster({
     users: overrides.users ?? buildUsersDb(),
@@ -73,6 +91,8 @@ function buildFlashCaster(overrides: {
     gateway: overrides.gateway ?? buildGateway(),
     decrypt: overrides.decrypt ?? ((data) => data),
     signerEncryptionKey: SIGNER_ENCRYPTION_KEY,
+    promoteGateway: overrides.promoteGateway ?? buildPromoteGateway(),
+    imageTier: overrides.imageTier ?? buildImageTierStore(),
   });
 }
 
@@ -133,6 +153,7 @@ describe("FlashCaster.handle", () => {
       text: "text",
       timestamp: 1700000000,
       flash_count: "1",
+      image_tier: null,
     };
 
     const result = await flashCaster.handle(minimalFlash);
@@ -207,6 +228,67 @@ describe("FlashCaster.handle", () => {
     expect(gateway.publishCast).toHaveBeenCalledTimes(2);
     expect(gateway.publishCast).toHaveBeenNthCalledWith(1, "encrypted-signer", 1, "Paris");
     expect(gateway.publishCast).toHaveBeenNthCalledWith(2, "encrypted-signer", 1, "Paris");
+  });
+
+  it("promotes a feed-tier image to keep before publishing", async () => {
+    const flashes = buildFlashesDb();
+    const users = buildUsersDb({ getByUsername: vi.fn(async () => buildUser({ auto_cast: true })) });
+    const gateway = buildGateway();
+    const promoteGateway = buildPromoteGateway();
+    const imageTier = buildImageTierStore();
+    const flashCaster = buildFlashCaster({ users, flashes, gateway, promoteGateway, imageTier });
+
+    await flashCaster.handle(buildPayload({ image_tier: "feed" }));
+
+    expect(promoteGateway.promoteFeedToKeep).toHaveBeenCalledWith(1, "cid123");
+    expect(imageTier.markKept).toHaveBeenCalledWith(1);
+
+    const promoteOrder = (promoteGateway.promoteFeedToKeep as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    const publishOrder = (gateway.publishCast as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    expect(promoteOrder).toBeLessThan(publishOrder);
+  });
+
+  it("skips promotion for an already-kept image and still publishes", async () => {
+    const flashes = buildFlashesDb();
+    const users = buildUsersDb({ getByUsername: vi.fn(async () => buildUser({ auto_cast: true })) });
+    const gateway = buildGateway();
+    const promoteGateway = buildPromoteGateway();
+    const flashCaster = buildFlashCaster({ users, flashes, gateway, promoteGateway });
+
+    await flashCaster.handle(buildPayload({ image_tier: "keep" }));
+
+    expect(promoteGateway.promoteFeedToKeep).not.toHaveBeenCalled();
+    expect(gateway.publishCast).toHaveBeenCalled();
+  });
+
+  it("skips promotion when image_tier is null (pre-flag-flip / stay dark) and still publishes", async () => {
+    const flashes = buildFlashesDb();
+    const users = buildUsersDb({ getByUsername: vi.fn(async () => buildUser({ auto_cast: true })) });
+    const gateway = buildGateway();
+    const promoteGateway = buildPromoteGateway();
+    const flashCaster = buildFlashCaster({ users, flashes, gateway, promoteGateway });
+
+    const result = await flashCaster.handle(buildPayload({ image_tier: null }));
+
+    expect(promoteGateway.promoteFeedToKeep).not.toHaveBeenCalled();
+    expect(gateway.publishCast).toHaveBeenCalled();
+    expect(result).not.toBeNull();
+  });
+
+  it("a promotion failure prevents the cast and propagates as a retryable error", async () => {
+    const flashes = buildFlashesDb();
+    const users = buildUsersDb({ getByUsername: vi.fn(async () => buildUser({ auto_cast: true })) });
+    const gateway = buildGateway();
+    const promoteGateway = buildPromoteGateway({
+      promoteFeedToKeep: vi.fn(async () => {
+        throw new Error("b2 down");
+      }),
+    });
+    const flashCaster = buildFlashCaster({ users, flashes, gateway, promoteGateway });
+
+    await expect(flashCaster.handle(buildPayload({ image_tier: "feed" }))).rejects.toThrow("b2 down");
+
+    expect(gateway.publishCast).not.toHaveBeenCalled();
   });
 });
 

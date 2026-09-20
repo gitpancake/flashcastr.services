@@ -22,6 +22,7 @@ export interface ClaimedFlashJob extends FlashJob {
   text: string;
   timestamp: Date;
   flash_count: string;
+  image_tier: string | null;
 }
 
 export class FlashJobsDb extends Postgres<FlashJob> {
@@ -60,7 +61,7 @@ export class FlashJobsDb extends Postgres<FlashJob> {
         claimed.flash_id::int AS flash_id, claimed.stage, claimed.attempts,
         claimed.next_attempt_at, claimed.last_error, claimed.created_at,
         flashes.city, flashes.player, flashes.img, flashes.ipfs_cid,
-        flashes.text, flashes.timestamp, flashes.flash_count
+        flashes.text, flashes.timestamp, flashes.flash_count, flashes.image_tier
       FROM claimed
       JOIN flashes ON flashes.flash_id = claimed.flash_id
     `;

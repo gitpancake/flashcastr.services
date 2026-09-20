@@ -3,6 +3,7 @@ import { createLogger } from "@flashcastr/logger";
 import type { Counter } from "@flashcastr/metrics";
 import type { FlashCastedPayload, FlashcastrFlash } from "@flashcastr/shared-types";
 import type { CastGateway } from "./castGateway.js";
+import type { PromoteGateway } from "./promoteGateway.js";
 
 const log = createLogger("neynar-engine");
 
@@ -24,6 +25,11 @@ export interface CastableFlash {
   text: string;
   timestamp: number; // unix seconds
   flash_count: string;
+  image_tier: string | null;
+}
+
+export interface ImageTierStore {
+  markKept(flashId: number): Promise<void>;
 }
 
 export interface FlashCasterOptions {
@@ -33,6 +39,8 @@ export interface FlashCasterOptions {
   readonly decrypt: (encryptedData: string, key: string) => string;
   readonly signerEncryptionKey: string;
   readonly castsPublished?: Counter<string>;
+  readonly promoteGateway: PromoteGateway;
+  readonly imageTier: ImageTierStore;
 }
 
 export class FlashCaster {
@@ -42,6 +50,8 @@ export class FlashCaster {
   private readonly decrypt: (encryptedData: string, key: string) => string;
   private readonly signerEncryptionKey: string;
   private readonly castsPublished: Counter<string> | undefined;
+  private readonly promoteGateway: PromoteGateway;
+  private readonly imageTier: ImageTierStore;
 
   constructor(options: FlashCasterOptions) {
     this.users = options.users;
@@ -50,6 +60,8 @@ export class FlashCaster {
     this.decrypt = options.decrypt;
     this.signerEncryptionKey = options.signerEncryptionKey;
     this.castsPublished = options.castsPublished;
+    this.promoteGateway = options.promoteGateway;
+    this.imageTier = options.imageTier;
   }
 
   async handle(flash: CastableFlash): Promise<FlashCastedPayload | null> {
@@ -93,6 +105,11 @@ export class FlashCaster {
 
     let castHash: string | null = null;
     if (shouldAttemptCast) {
+      if (flash.image_tier === "feed") {
+        await this.promoteGateway.promoteFeedToKeep(flash.flash_id, flash.ipfs_cid);
+        await this.imageTier.markKept(flash.flash_id);
+      }
+
       try {
         const signerUuid = this.decrypt(appUser.signer_uuid, this.signerEncryptionKey);
         const cast = await this.gateway.publishCast(signerUuid, flash.flash_id, flash.city);

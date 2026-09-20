@@ -61,6 +61,18 @@ describe.skipIf(!process.env.DATABASE_URL)("FlashJobsDb", () => {
     expect(claimed[0].attempts).toBe(1);
     expect(claimed[0].img).toBe("https://example.com/pin-me.png");
     expect(claimed[0].ipfs_cid).toBe(flash.ipfs_cid);
+    expect(claimed[0].image_tier).toBe(null);
+  });
+
+  it("claims a job and carries the flashes row's image_tier when set", async () => {
+    const flash = await insertFlash({ flash_id: 112 });
+    await pool.query("UPDATE flashes SET image_tier = $2 WHERE flash_id = $1", [flash.flash_id, "feed"]);
+    await db.enqueue(pool, flash.flash_id, "pin");
+
+    const claimed = await db.claim("pin", 10, 60_000, 5);
+
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0].image_tier).toBe("feed");
   });
 
   it("enqueue is idempotent: enqueueing the same (flash_id, stage) twice leaves one row", async () => {

@@ -1,15 +1,6 @@
 import { config } from "dotenv";
 config();
 
-import type { ConsumeMessage } from "amqplib";
-import {
-  FlashcastrConsumer,
-  FlashcastrPublisher,
-  QUEUES,
-  ROUTING_KEYS,
-  observeQueueDepths,
-  type ConsumerOptions,
-} from "@flashcastr/rabbitmq";
 import {
   getPool,
   FlashcastrFlashesDb,
@@ -25,7 +16,6 @@ import { createMetricsRegistry, Counter } from "@flashcastr/metrics";
 import { runService } from "@flashcastr/runtime";
 import { createLogger } from "@flashcastr/logger";
 import { requireEnv, intEnv } from "@flashcastr/config";
-import type { MessageEnvelope, FlashStoredPayload } from "@flashcastr/shared-types";
 import { NeynarCastGateway } from "./neynarCastGateway.js";
 import { FlashCaster, type CastableFlash } from "./flashCaster.js";
 import { completeCastJob } from "./cast-completion.js";
@@ -46,7 +36,6 @@ const pool = getPool();
 const flashcastrFlashesDb = new FlashcastrFlashesDb(pool);
 const flashcastrUsersDb = new FlashcastrUsersDb(pool);
 const flashJobsDb = new FlashJobsDb(pool);
-const publisher = new FlashcastrPublisher("neynar-engine");
 const castGateway = new NeynarCastGateway({ apiKey: NEYNAR_API_KEY });
 
 const flashCaster = new FlashCaster({
@@ -58,9 +47,7 @@ const flashCaster = new FlashCaster({
   castsPublished,
 });
 
-// Shared retry policy between NeynarEngineConsumer (RabbitMQ path) and
-// castJobWorker (Postgres cast-job path) — same failures are non-retryable
-// on both paths.
+// Non-retryable failures for castJobWorker's shouldRetry.
 function isRetryableCastError(error: Error): boolean {
   const msg = error.message.toLowerCase();
   if (msg.includes("no user found") || msg.includes("not a flashcastr user")) return false;
@@ -68,33 +55,6 @@ function isRetryableCastError(error: Error): boolean {
   return true;
 }
 
-class NeynarEngineConsumer extends FlashcastrConsumer<FlashStoredPayload> {
-  constructor(
-    private readonly flashCaster: FlashCaster,
-    private readonly publisher: FlashcastrPublisher,
-    options: ConsumerOptions = {}
-  ) {
-    super("neynar-engine", QUEUES.FLASH_STORED, options);
-  }
-
-  protected override shouldRequeueOnFailure(error: Error): boolean {
-    return isRetryableCastError(error);
-  }
-
-  protected async handleMessage(
-    envelope: MessageEnvelope<FlashStoredPayload>,
-    _raw: ConsumeMessage
-  ): Promise<void> {
-    const castedPayload = await this.flashCaster.handle(envelope.payload);
-    if (!castedPayload) return;
-    await this.publisher.publish(ROUTING_KEYS.FLASH_CASTED, castedPayload, envelope.correlationId);
-    notifyFlashCasted(pool, castedPayload).catch((notifyErr) =>
-      log.warn(`Failed to send flash_casted NOTIFY for ${castedPayload.flash_id}:`, notifyErr)
-    );
-  }
-}
-
-const consumer = new NeynarEngineConsumer(flashCaster, publisher, { registry });
 const retryInterval = intEnv("RETRY_INTERVAL_MS", 300000);
 
 const CAST_JOB_CONCURRENCY = intEnv("CAST_JOB_CONCURRENCY", 5);
@@ -132,7 +92,6 @@ runService("neynar-engine", {
   registry,
   metricsPort: intEnv("METRICS_PORT", 9090),
   healthChecks: {
-    rabbitmq: () => ({ status: consumer.isConsuming() ? "ok" : "error" }),
     castJobs: () => ({ status: castJobWorker.isRunning() ? "ok" : "error" }),
     postgres: async () => {
       await pool.query("SELECT 1");
@@ -141,14 +100,10 @@ runService("neynar-engine", {
   },
   start: async (ctx) => {
     ctx.onShutdown("postgres", () => closePool());
-    ctx.onShutdown("publisher", () => publisher.close());
-    ctx.onShutdown("consumer", () => consumer.close());
     ctx.onShutdown("cast-job-worker", () => castJobWorker.close());
 
     await flashCaster.checkSignerStatuses();
-    await consumer.startConsuming();
     castJobWorker.start();
-    ctx.onShutdown("queue-depths", observeQueueDepths(registry, [consumer]));
     ctx.onShutdown(
       "job-backlog",
       observeJobBacklog(registry, pool, [{ stage: "cast", maxAttempts: CAST_JOB_MAX_ATTEMPTS }])

@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { TransientError, ROUTING_KEYS, type FlashcastrPublisher } from "@flashcastr/rabbitmq";
+import { TransientError } from "@flashcastr/jobs";
 import { CircuitBreakerOpenError, type CircuitBreaker } from "@flashcastr/resilience";
 import { createLogger } from "@flashcastr/logger";
 import type { Counter } from "@flashcastr/metrics";
@@ -17,14 +17,6 @@ interface RateLimiterLike {
 
 export interface PinCompletionPort {
   complete(payload: ImagePinnedPayload, correlationId: string): Promise<void>;
-}
-
-export class RabbitMqPinCompletionPort implements PinCompletionPort {
-  constructor(private readonly publisher: Pick<FlashcastrPublisher, "publish">) {}
-
-  async complete(payload: ImagePinnedPayload, correlationId: string): Promise<void> {
-    await this.publisher.publish(ROUTING_KEYS.IMAGE_PINNED, payload, correlationId);
-  }
 }
 
 function toStoredPayload(payload: ImagePinnedPayload): FlashStoredPayload {

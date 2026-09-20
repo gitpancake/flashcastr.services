@@ -1,87 +1,77 @@
 # flashcastr.services
 
-npm-workspaces monorepo containing the Flashcastr microservices pipeline: 4 pipeline engines and a GraphQL API communicating via RabbitMQ, plus the `agent-invaders` LangGraph agent. Node 22, TypeScript, run from source with `tsx`.
+npm-workspaces monorepo for the Flashcastr pipeline: three engines, a GraphQL API, and the `agent-invaders` LangGraph agent, all coordinated through a Postgres `flash_jobs` table and `LISTEN`/`NOTIFY` — no message broker. Node 22, TypeScript, run from source with `tsx`.
 
 ## Architecture
 
 ```
 Space Invaders API
        |
-  flash-engine         --> FLASH_RECEIVED { payload }
-       | (RabbitMQ)
-  image-engine         --> IMAGE_PINNED { payload, ipfs_cid }
-       | (RabbitMQ)
-  database-engine      --> FLASH_STORED { payload, ipfs_cid, db_info }
-       | (RabbitMQ)
-  neynar-engine        --> FLASH_CASTED { payload, ipfs_cid, db_info }
-       | (RabbitMQ)
-  api                  <-- subscribes to FLASH_STORED + FLASH_CASTED (WebSocket subscriptions)
+  flash-engine    -- writes flashes, enqueues flash_jobs('pin') -->  Postgres
+                                                                          |
+  image-engine    <-- JobWorker claims stage='pin' -----------------------
+       |
+       +-- pins image to IPFS
+       +-- one transaction: sets ipfs_cid, completes the 'pin' job,
+       |     enqueues flash_jobs('cast'), pg_notify('flash_stored', ...)
+       v
+  Postgres
+       |
+  neynar-engine   <-- JobWorker claims stage='cast' ----------------------
+       |
+       +-- casts via Neynar
+       +-- completes the 'cast' job, pg_notify('flash_casted', ...)
+       v
+  api              <-- LISTENs on flash_stored + flash_casted, bridges to
+                        GraphQL subscriptions (graphql-ws)
 ```
 
 ### Services
 
 | Service | Role | Deploy |
 |---------|------|--------|
-| **flash-engine** | Cron-fetches flashes from Space Invaders API, publishes `FLASH_RECEIVED` | Railway |
-| **image-engine** | Downloads images, pins to IPFS via Pinata, publishes `IMAGE_PINNED` | Digital Ocean |
-| **database-engine** | Batch inserts flashes into Postgres, publishes `FLASH_STORED` | Railway |
-| **neynar-engine** | Casts to Farcaster via Neynar SDK, publishes `FLASH_CASTED` + retry worker | Railway |
-| **api** | GraphQL API (Apollo Server 5) with WebSocket subscriptions | Railway |
-
-### RabbitMQ Topology
-
-- **Exchange:** `flashcastr.events` (topic, durable)
-- **Dead Letter Exchange:** `flashcastr.dlx` (topic, durable)
-- **Durable queues:** `flash-engine.flash-received`, `image-engine.image-pinned`, `database-engine.flash-stored`, `flashcastr.dead-letters`
-- `flash.casted` and `flash.stored` are also bound to a server-named, exclusive, auto-delete queue per running `api` instance (no dedicated durable queue) — this backs GraphQL subscriptions; each replica sees every event, and nothing buffers across an api restart
-
-All messages use a common envelope:
-
-```typescript
-interface MessageEnvelope<T> {
-  id: string;              // UUID for idempotency
-  timestamp: number;       // Unix epoch ms
-  source: string;          // Service name
-  type: string;            // Routing key
-  version: string;         // Schema version
-  correlationId: string;   // Traces a flash through the pipeline
-  payload: T;
-}
-```
+| **flash-engine** | Cron-fetches flashes from Space Invaders API, writes to Postgres, enqueues `pin` jobs | Railway |
+| **image-engine** | `JobWorker` claims `pin` jobs, downloads + pins images to IPFS via Pinata, enqueues `cast` jobs | Railway |
+| **neynar-engine** | `JobWorker` claims `cast` jobs, casts to Farcaster via Neynar SDK, retry worker for failed casts | Railway |
+| **api** | GraphQL API (Apollo Server 5) with `LISTEN`/`NOTIFY`-backed WebSocket subscriptions | Railway |
+| **agent-invaders** | LangGraph agent (mentions, daily digest) — no `@flashcastr/*` lib imports | Railway |
 
 ## Project Structure
 
 ```
 flashcastr.services/
 ├── apps/
-│   ├── flash-engine/          # Fetch from Space Invaders API
-│   ├── image-engine/          # Download + pin to IPFS
-│   ├── database-engine/       # Store in Postgres
-│   ├── neynar-engine/         # Cast to Farcaster
-│   └── api/                   # GraphQL API (migrated from flashcastr.api)
+│   ├── flash-engine/          # Fetch from Space Invaders API, enqueue pin jobs
+│   ├── image-engine/          # Claim pin jobs, download + pin to IPFS
+│   ├── neynar-engine/         # Claim cast jobs, cast to Farcaster
+│   ├── api/                   # GraphQL API + subscriptions
+│   └── agent-invaders/        # LangGraph agent (own CLAUDE.md)
 │
 ├── libs/
-│   ├── shared-types/          # Flash, message envelopes, event constants
-│   ├── rabbitmq/              # Publisher, consumer, topology setup
-│   ├── database/              # PG pool, flashes/flashcastr DB classes
-│   ├── proxy/                 # Proxy rotation for API requests
-│   ├── metrics/               # Prometheus registry + HTTP server
-│   ├── config/                # Env var helpers
-│   ├── health/                # Health check server
-│   ├── logger/                # Structured logging with Loki shipping
-│   └── crypto/                # AES-256-GCM decrypt (signer keys)
+│   ├── shared-types/          # Flash, job payload types
+│   ├── jobs/                  # JobWorker, TransientError/FatalMessageError, queue-depth metrics
+│   ├── database/              # PG pool, FlashesDb/FlashJobsDb/etc., notify.ts (pg_notify)
+│   ├── proxy/                  # Proxy rotation for API requests
+│   ├── metrics/                # Prometheus registry + HTTP server
+│   ├── config/                 # Env var helpers
+│   ├── health/                 # Health check server
+│   ├── logger/                 # Structured logging with Loki shipping
+│   ├── crypto/                 # AES-256-GCM decrypt (signer keys)
+│   ├── resilience/             # CircuitBreaker
+│   └── runtime/                # runService process lifecycle
 │
-├── docker-compose.yml         # Local dev (RabbitMQ + Postgres + all services)
-├── .env.example               # Environment variable reference
+├── migrations/                 # Plain SQL, applied by scripts/migrate.ts
+├── docker-compose.yml          # Local dev (Postgres + all services)
+├── .env.example                 # Environment variable reference
 └── .github/workflows/
-    └── deploy-image-engine.yml  # DO deploy via GitHub Action
+    └── ci.yml                   # typecheck + test on push/PR
 ```
 
 ## Getting Started
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 22+
 - Docker (for local dev)
 
 ### Local Development
@@ -90,7 +80,7 @@ flashcastr.services/
 # Install dependencies
 npm install
 
-# Start infrastructure + all services locally
+# Start Postgres + all services locally
 docker-compose up
 
 # Or run a single service in dev mode
@@ -112,7 +102,7 @@ export DATABASE_URL=postgresql://flashcastr:flashcastr@localhost:5432/flashcastr
 npm run migrate
 ```
 
-This gets you tables the engines and `api` can boot against and store a flash end to end locally.
+This gets you tables the engines and `api` can boot against and store a flash end to end locally. `0001_baseline.sql` is a straight `pg_dump --schema-only` of production, and every migration since has run there for real, so `npm run migrate` against a fresh database reconstructs the production schema exactly.
 
 `npm run migrate` refuses to run without `DATABASE_URL` set, and re-running it is a no-op (already-applied migrations are skipped). `npm run migrate -- --baseline <name>` requires an explicit upper-bound migration filename (e.g. `--baseline 0001_baseline.sql`) and records only migrations up to and including it as applied *without* running their SQL — used in production to adopt a migration that just documents a schema that already exists there, without baselining later migrations that must actually run. Migrations past the bound are left pending for a subsequent plain `npm run migrate`. See `migrations/0002_drop_deleted.sql` for the deploy order that migration requires (baseline → deploy code → run the real migration).
 
@@ -128,15 +118,21 @@ Key variables per service:
 
 | Variable | Services | Description |
 |----------|----------|-------------|
-| `RABBITMQ_URL` | All | AMQP connection string |
-| `DATABASE_URL` | database-engine, neynar-engine | Postgres connection string |
-| `PINATA_JWT` | image-engine | Pinata API JWT for IPFS pinning |
+| `DATABASE_URL` | All (job-pipeline services) | Postgres connection string |
 | `PROXY_LIST` | flash-engine, image-engine | Comma-separated proxy URLs |
-| `NEYNAR_API_KEY` | neynar-engine | Neynar API key for Farcaster |
+| `CRON_SCHEDULE`, `OFF_PEAK_MIN_INTERVAL_MS` | flash-engine | Poll cadence |
+| `PINATA_JWT` | image-engine | Pinata API JWT for IPFS pinning |
+| `CONSUMER_CONCURRENCY`, `CONSUMER_RATE_LIMIT`, `CONSUMER_MAX_ATTEMPTS` | image-engine | `pin`-job worker concurrency/rate limit/max attempts |
+| `NEYNAR_API_KEY` | neynar-engine, agent-invaders | Neynar API key for Farcaster |
 | `SIGNER_ENCRYPTION_KEY` | neynar-engine | Hex key for decrypting signer UUIDs |
-| `METRICS_PORT` | All | Prometheus metrics port (default: 9090) |
+| `RETRY_INTERVAL_MS` | neynar-engine | Failed-cast retry worker interval |
+| `CAST_JOB_CONCURRENCY`, `CAST_JOB_LEASE_MS`, `CAST_JOB_MAX_ATTEMPTS`, `CAST_JOB_POLL_INTERVAL_MS` | neynar-engine | `cast`-job worker tuning |
+| `API_KEY`, `TRUST_PROXY_HOPS`, `RATE_LIMIT_SIGNUP_PER_10MIN`, `RATE_LIMIT_IDENTIFICATION_PER_MIN`, `CORS_ORIGINS`, `GRAPHQL_INTROSPECTION` | api | Hardening knobs (see project `CLAUDE.md`) |
+| `METRICS_PORT` | All | Prometheus metrics port |
 | `LOKI_URL` | All (optional) | Loki URL for log shipping (e.g., `http://loki:3100`) |
 | `PORT` | api | GraphQL API port (default: 4000) |
+
+`agent-invaders` has its own set of env vars (Fireworks, Farcaster signer, Tavily, etc.) — see `.env.example`.
 
 ### Type Checking
 
@@ -148,37 +144,12 @@ npm test            # vitest across libs and apps
 
 ## Deployment
 
-### Railway (flash-engine, database-engine, neynar-engine, api)
+### Railway (flash-engine, image-engine, neynar-engine, api, agent-invaders)
 
-These deploy automatically on push to `main` via Railway's git integration. Each service is configured with:
+All 5 apps deploy automatically on push to `main` via Railway's git integration. Each service is configured with:
 
 - **Root directory:** `apps/<service-name>`
 - **Dockerfile:** `apps/<service-name>/Dockerfile`
 - **Watch paths:** `apps/<service-name>/**`, `libs/**`, `package.json`, `tsconfig.base.json`
 
-Services connect to the existing Railway Postgres and RabbitMQ instances via internal networking.
-
-### Digital Ocean (image-engine)
-
-Deploys via GitHub Action (`.github/workflows/deploy-image-engine.yml`) triggered on push to `main` when `apps/image-engine/**` or `libs/**` change.
-
-Required GitHub secrets:
-- `DIGITALOCEAN_ACCESS_TOKEN`
-- `DO_REGISTRY_NAME`
-- `DO_APP_ID`
-
-## Migration from Old Architecture
-
-The old system (`invaders.producer` + `invaders.consumer`) uses a single RabbitMQ queue `flash_images`. The `apps/api` service was migrated from the standalone `flashcastr.api` repository. The new system uses separate queues under the `flashcastr.events` exchange. Both old and new pipeline can run in parallel safely:
-
-- Same Postgres database (ON CONFLICT handles overlap)
-- Different RabbitMQ queues (no interference)
-- **Rollback:** restart old services, they resume from where they left off
-
-### Migration Steps
-
-1. Deploy new services alongside old ones
-2. Run neynar-engine in dry-run mode (verify without casting)
-3. Compare flash counts over 24 hours
-4. Enable casting in neynar-engine, disable in old producer
-5. Shut down old producer + consumer
+Services connect to the existing Railway Postgres instance via internal networking. Each Dockerfile bundles its app with esbuild, marking `pg` (and `@neynar/nodejs-sdk` where used) `--external` rather than bundling them — see project `CLAUDE.md` for the build details.

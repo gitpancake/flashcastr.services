@@ -1,19 +1,19 @@
 # flashcastr.services
 
-npm-workspaces monorepo: 4 pipeline engines, 1 GraphQL API, 1 LangGraph agent, 12 shared libs.
+npm-workspaces monorepo: 3 pipeline engines, 1 GraphQL API, 1 LangGraph agent, 11 shared libs.
 
-**Mid-migration (epic `postgres-job-pipeline`):** RabbitMQ is being replaced by a Postgres job table. Done: cast stage on `flash_jobs`, api subscriptions on `LISTEN/NOTIFY`. Still on RabbitMQ: `flash.received` and `image.pinned`. Sections below describe what runs today.
+**Epic `postgres-job-pipeline` is complete.** RabbitMQ has been fully removed. Engines now coordinate through a Postgres `flash_jobs` table (`pin` and `cast` stages, claimed by `JobWorker`s) and `pg_notify`/`LISTEN` for the api's GraphQL subscriptions. Sections below describe what runs today.
 
 ## Workspace
 
-- `apps/` — flash-engine, image-engine, database-engine, neynar-engine, api, agent-invaders (own `CLAUDE.md`, no lib imports)
-- `libs/` — shared-types, rabbitmq, jobs, database, proxy, metrics, health, logger, crypto, config, resilience, runtime
-- Imports use `@flashcastr/<lib>`; resolved from source via the `@flashcastr/source` exports condition. Dev/droplet run under `tsx` directly, no build step; Docker images for the 5 Railway apps bundle with esbuild (see Deployment).
-- `scripts/` — `replay-dead-letters.ts` (DLQ → original routing key), `migrate-old-queue.ts` (one-off)
+- `apps/` — flash-engine, image-engine, neynar-engine, api, agent-invaders (own `CLAUDE.md`, no lib imports)
+- `libs/` — shared-types, jobs, database, proxy, metrics, health, logger, crypto, config, resilience, runtime
+- Imports use `@flashcastr/<lib>`; resolved from source via the `@flashcastr/source` exports condition. Dev runs under `tsx` directly, no build step; Docker images for the 5 Railway apps bundle with esbuild (see Deployment).
+- `scripts/` — `migrate.ts` (applies pending SQL migrations, see Database)
 
 ## Stack
 
-Node 22 (`node:22-slim`, engines `>=22`), TypeScript strict `nodenext`, RabbitMQ (`amqplib` 2, topic exchange `flashcastr.events`, DLX `flashcastr.dlx`), Postgres (`pg`), Pinata, Neynar SDK, Apollo Server 5 + `@as-integrations/express4` + graphql-ws 6, prom-client, OpenTelemetry 2.x (api only), pino + `pino-loki` via `@flashcastr/logger`.
+Node 22 (`node:22-slim`, engines `>=22`), TypeScript strict `nodenext`, Postgres (`pg`), Pinata, Neynar SDK, Apollo Server 5 + `@as-integrations/express4` + graphql-ws 6, prom-client, pino + `pino-loki` via `@flashcastr/logger`.
 
 ## Commands
 
@@ -22,7 +22,6 @@ npm install
 npm run typecheck          # tsc over apps/, libs/, scripts/ (what CI runs)
 npm test                   # vitest: libs/*/src/**/*.test.ts, apps/*/src/**/*.test.ts, apps/*/tests/**
 npx tsx --watch apps/<service>/src/main.ts
-npx tsx scripts/replay-dead-letters.ts --dry-run [--limit N] [--only flash.received]
 docker-compose up
 ```
 
@@ -31,48 +30,30 @@ Lockfile: regenerate with `npx npm@10 install --package-lock-only` after depende
 ## Message Flow
 
 ```
-flash-engine --flash.received--> image-engine --image.pinned--> database-engine ==cast job (flash_jobs)==> neynar-engine
-database-engine --NOTIFY flash_stored--> api          neynar-engine --NOTIFY flash_casted--> api (graphql subscriptions)
+flash-engine ==enqueue pin job (flash_jobs)==> image-engine ==enqueue cast job (flash_jobs)==> neynar-engine
+                        image-engine --NOTIFY flash_stored--> api      neynar-engine --NOTIFY flash_casted--> api (graphql subscriptions)
 ```
 
-`-->` is RabbitMQ, `==>` is a `flash_jobs` row. database-engine no longer publishes `flash.stored`; it enqueues a cast job for every flash in its upsert transaction and neynar-engine deletes the job for non-users. neynar-engine keeps its old `database-engine.flash-stored` consumer for one release to drain the queue (it still publishes `flash.casted`, which nothing consumes). The api has no RabbitMQ connection.
-
-Envelope: `MessageEnvelope<T>` (`id`, `correlationId`, `source`, `type`, `version`, `timestamp`, `payload`). Publisher sets AMQP `messageId = envelope.id`.
-
-## Reliability contract (libs/rabbitmq)
-
-- **Publisher** uses a confirm channel; `publish()` resolves only on broker ack, rejects on nack or after `confirmTimeoutMs` (10s). Reconnects lazily.
-- **Consumer** (`FlashcastrConsumer`, Template Method): subclasses implement `handleMessage`; failures go through one policy:
-  - `TransientError(msg, retryAfterMs)` → sleep, requeue, no attempt consumed (image-engine uses it while the IPFS circuit is open).
-  - `FatalMessageError` or `shouldRequeueOnFailure() === false` → dead-letter immediately.
-  - otherwise → exponential backoff (1s→30s) and requeue until `maxAttempts` (default 5, env `CONSUMER_MAX_ATTEMPTS`; image-engine 10), then dead-letter.
-  - Malformed / non-envelope bodies → dead-letter.
-  - Attempts are tracked in-process by `messageId` (requeue does not add `x-death`).
-- `manualAck: true` (database-engine) hands `ack/requeue/deadLetter` to the handler; settles are ignored if the delivery channel has been replaced (broker redelivers).
-- `exclusive: { bindings: string[] }` still exists as a consumer option but has no caller since the api moved to `LISTEN/NOTIFY`.
-- Recovers from connection close, channel close, and broker-side consumer cancel; connect races a 20s handshake deadline.
-- `isConsuming()` feeds `/health`; `observeQueueDepths()` exports `rabbitmq_queue_messages{queue}` incl. `flashcastr.dead-letters`.
-- Queue args (`x-max-length: 100000`, DLX) cannot change without recreating queues; overflow is drop-head → dead-lettered. Nothing consumes the DLQ: watch the gauge, replay with the script.
+`==>` is a `flash_jobs` row transition; `-->` is a `pg_notify`. flash-engine writes each flash to `flashes` and enqueues a `pin` job in the same transaction. image-engine's `JobWorker` claims `pin` jobs, pins to IPFS, and in one transaction updates `ipfs_cid`, completes the `pin` job, enqueues the `cast` job, and calls `notifyFlashStored`. neynar-engine's `JobWorker` claims `cast` jobs, casts via Neynar (or deletes the job for non-users), completes the job, and calls `notifyFlashCasted`. The api has no direct connection to either engine — it only `LISTEN`s on the two Postgres channels.
 
 ## Job pipeline (libs/jobs + `FlashJobsDb`)
 
 - `flash_jobs (flash_id, stage 'pin'|'cast', attempts, next_attempt_at, last_error, created_at)`, PK `(flash_id, stage)`. A row exists only while work is outstanding; success deletes it.
 - `FlashJobsDb.enqueue/complete` take a client so callers put them in their own transaction. `claim` is one statement (`FOR UPDATE SKIP LOCKED` inside it) that bumps `attempts` and sets `next_attempt_at = now() + lease`; no transaction is held during the work, and a crashed worker's job is reclaimed when the lease expires.
-- `JobWorker`: N claim loops; `TransientError` → `defer` (attempt handed back), `FatalMessageError` / `shouldRetry === false` → dead, otherwise backoff 1s→30s. `pause()/resume()`, `isRunning()` for `/health`, `close()` waits for in-flight handlers. `TransientError`/`FatalMessageError` live here; `libs/rabbitmq` re-exports them.
+- `JobWorker`: N claim loops; `TransientError` → `defer` (attempt handed back), `FatalMessageError` / `shouldRetry === false` → dead, otherwise backoff 1s→30s. `pause()/resume()`, `isRunning()` for `/health`, `close()` waits for in-flight handlers. `TransientError`/`FatalMessageError` live in `libs/jobs`.
 - Dead job = `attempts >= maxAttempts`: never claimed, stays queryable. `observeJobBacklog` exports `flash_jobs_backlog{stage,state=ready|leased|dead}` and `flash_jobs_oldest_ready_seconds{stage}`.
 - Events to the api: `notifyFlashStored` / `notifyFlashCasted` (`libs/database/src/notify.ts`) call `pg_notify` on channels `flash_stored` / `flash_casted` inside the completing transaction; payload is the subscription JSON (`flash_id`, `timestamp` as strings).
 
 ## Engine specifics
 
-- **database-engine**: batches (`BATCH_SIZE`, `BATCH_FLUSH_INTERVAL_MS`); one transaction does the upsert, a cast-job enqueue per flash and `notifyFlashStored`, and messages are acked after commit. Failure requeues after `BATCH_RETRY_DELAY_MS`. Prefetch is forced to ≥ 2×BATCH_SIZE.
-- **image-engine**: `CircuitBreaker` (30 consecutive pin failures → open 5 min → half-open single trial). Download/pin retries via `withRetry`. `CONSUMER_RATE_LIMIT` req/min. Two execution paths selected by `IMAGE_ENGINE_SOURCE` (`rabbitmq` default | `jobs`): the RabbitMQ path (droplet) is unchanged; the `jobs` path runs a `JobWorker` claiming `flash_jobs` `stage='pin'`, completing through a Postgres transaction (`updateIpfsCid` + `complete(pin)` + `enqueue(cast)` + `notifyFlashStored`) instead of publishing — both share one `ImagePinner` behind a `PinCompletionPort`. The breaker pauses/resumes the `jobs` path's `JobWorker` directly; the RabbitMQ path relies on `TransientError` + consumer requeue instead.
+- **image-engine**: `JobWorker` claiming `flash_jobs` `stage='pin'` (`CONSUMER_CONCURRENCY`, `PIN_JOB_LEASE_MS`, `CONSUMER_MAX_ATTEMPTS` default 10). `CircuitBreaker` (30 consecutive pin failures → open 5 min → half-open single trial) pauses/resumes the `JobWorker` directly. Download/pin retries via `withRetry`; `CONSUMER_RATE_LIMIT` req/min. Completion runs through one Postgres transaction (`updateIpfsCid` + `complete(pin)` + `enqueue(cast)` + `notifyFlashStored`) behind a `PinCompletionPort`.
 - **neynar-engine**: `JobWorker` on stage `cast` (`CAST_JOB_CONCURRENCY` 5, `CAST_JOB_LEASE_MS` 60000, `CAST_JOB_MAX_ATTEMPTS` 5, `CAST_JOB_POLL_INTERVAL_MS` 1000). User lookup by username; the `flashcastr_flashes` row is inserted (`cast_hash NULL`) before `publishCast`, and every cast carries a stable Neynar `idem` key (`buildCastIdemKey(flashId)`), so a redelivery or a race with the retry worker cannot double-cast. Retry worker every `RETRY_INTERVAL_MS` disables `auto_cast` on revoked/403.
-- **flash-engine**: croner (`CRON_SCHEDULE`, `protect: true`); peak (`Europe/Paris` 06:00-23:00) polls every tick, off-peak is gated by `poll-gate.ts`'s `shouldPoll` to a minimum interval (`OFF_PEAK_MIN_INTERVAL_MS`, default 10 min) instead of a coin flip, logging a skip at info with the reason and seconds to the next eligible poll. In-memory `recentFlashIds` dedupe (restart re-publishes; downstream is idempotent). `flash_engine_last_successful_fetch_timestamp_seconds` gauge + `sourcePoll` health check go `degraded` (never `error`) past 30 min without a successful fetch. Reads registered players from Postgres at boot and on a periodic refresh loop (default every 5 min), with a refresh-if-stale check before each poll; exits if the initial Postgres load fails.
-- **api**: `withApiKey` (constant-time, `x-api-key`) on `setUserAutoCast`/`deleteUser`; `withRateLimit` per client IP on `initiateSignup` (creates a Neynar-sponsored signer, billed in credits) and `saveFlashIdentification`. `WhereBuilder` + `clampLimit` (max 500) for list queries; `createCache` keyed by args. Subscriptions bridge through `PostgresSubscriptionBridge` (`subscription-bridge.ts`): a dedicated `pg.Client` (not pooled) that `LISTEN`s on both channels, feeds `InMemoryPubSub`, and reconnects with backoff; events during a reconnect are lost, which is correct for live subscriptions. `/health` = Postgres (503 on error) + `isListening()` (`degraded`, never 503). Tracing preloaded via `instrumentation.ts` then `server.ts` is dynamically imported.
+- **flash-engine**: croner (`CRON_SCHEDULE`, `protect: true`); peak (`Europe/Paris` 06:00-23:00) polls every tick, off-peak is gated by `poll-gate.ts`'s `shouldPoll` to a minimum interval (`OFF_PEAK_MIN_INTERVAL_MS`, default 10 min) instead of a coin flip, logging a skip at info with the reason and seconds to the next eligible poll. In-memory `recentFlashIds` dedupe (restart re-writes; `insertNew`/job enqueue are idempotent per `flash_id`). `flash_engine_last_successful_fetch_timestamp_seconds` gauge + `sourcePoll` health check go `degraded` (never `error`) past 30 min without a successful fetch. Reads registered players from Postgres at boot and on a periodic refresh loop (default every 5 min), with a refresh-if-stale check before each poll; exits if the initial Postgres load fails.
+- **api**: `withApiKey` (constant-time, `x-api-key`) on `setUserAutoCast`/`deleteUser`; `withRateLimit` per client IP on `initiateSignup` (creates a Neynar-sponsored signer, billed in credits) and `saveFlashIdentification`. `WhereBuilder` + `clampLimit` (max 500) for list queries; `createCache` keyed by args. Subscriptions bridge through `PostgresSubscriptionBridge` (`subscription-bridge.ts`): a dedicated `pg.Client` (not pooled) that `LISTEN`s on both channels, feeds `InMemoryPubSub`, and reconnects with backoff; events during a reconnect are lost, which is correct for live subscriptions. `/health` = Postgres (503 on error) + `isListening()` (`degraded`, never 503).
 
 ## Process lifecycle (libs/runtime)
 
-`runService(name, { registry, metricsPort, healthChecks, start })`: serves `/metrics` + `/health` (503 only on `error`), runs `onShutdown` steps in reverse on SIGINT/SIGTERM, flushes Loki, exits 1 on unhandled rejection/exception. Register shutdown steps outermost-first (pool, publisher, consumer).
+`runService(name, { registry, metricsPort, healthChecks, start })`: serves `/metrics` + `/health` (503 only on `error`), runs `onShutdown` steps in reverse on SIGINT/SIGTERM, flushes Loki, exits 1 on unhandled rejection/exception. Register shutdown steps outermost-first (job worker/cron before the Postgres pool it depends on).
 
 ## Database
 
@@ -83,21 +64,21 @@ Envelope: `MessageEnvelope<T>` (`id`, `correlationId`, `source`, `type`, `versio
 | `flashcastr_users` | encrypted `signer_uuid` (AES-256-GCM, `SIGNER_ENCRYPTION_KEY`), `auto_cast`. Deletes are hard (`deleteWithFlashes` transaction) |
 | `flash_identifications` | upsert on `source_ipfs_cid` (unique index since `0003`) |
 | `flash_jobs` | see Job pipeline |
+| `farcaster_casts` | legacy, PK `thread_hash`; present in production (captured in `0001_baseline.sql`) but nothing in this codebase reads or writes it — leave alone |
 
-Merged is not applied: nothing runs migrations on deploy. After merging one, run `railway run -s Postgres -- sh -c 'DATABASE_URL="$DATABASE_PUBLIC_URL" npx tsx scripts/migrate.ts'` and check `schema_migrations`.
+Merged is not applied: nothing runs migrations on deploy (no `migrate` step in any Dockerfile or CI). After merging one, run `railway run -s Postgres -- sh -c 'DATABASE_URL="$DATABASE_PUBLIC_URL" npx tsx scripts/migrate.ts'` and check `schema_migrations`.
 
-Schema source lives in `migrations/` (see README "Local database"); it documents what's applied in Railway Postgres, not a fresh-install source of truth.
+Schema source lives in `migrations/` (see README "Local database") — `0001_baseline.sql` is a straight `pg_dump --schema-only` of production, and every migration since has run there for real, so applying `migrations/` in order against an empty database now reconstructs the production schema exactly.
 
 ## Deployment
 
-- Railway (Dockerfile per app, auto-deploy on main): flash-engine, database-engine, neynar-engine, api, agent-invaders, image-engine (`IMAGE_ENGINE_SOURCE=jobs`, the `flash_jobs` `pin`-stage worker). Railway service settings own Dockerfile path/watch patterns.
-- Those 6 Dockerfiles are multi-stage: builder runs `npm ci` + `esbuild src/main.ts --bundle --platform=node --format=esm --target=node22` with `pg`/`amqplib`/`@neynar/nodejs-sdk` (and `@opentelemetry/*` for api) marked `--external`; a generated minimal `package.json` installs just those externals into the runtime stage, which copies only that `node_modules` + the bundle — no `libs/`, no source, no dev deps. agent-invaders imports no `@flashcastr/*` lib, so its Dockerfile skips the `libs/` COPY entirely.
-- DigitalOcean droplet via `deploy-image-engine.yml` (ssh + pm2, tsx directly, no Dockerfile): image-engine, still on the RabbitMQ path (`IMAGE_ENGINE_SOURCE` unset). The droplet's Node must be ≥22. image-engine's Dockerfile is only exercised by Railway and locally via `docker-compose up`.
+- Railway (Dockerfile per app, auto-deploy on main): flash-engine, image-engine, neynar-engine, api, agent-invaders — all 5 apps. Railway service settings own Dockerfile path/watch patterns.
+- Those 5 Dockerfiles are multi-stage: builder runs `npm ci` + `esbuild src/main.ts --bundle --platform=node --format=esm --target=node22` with `pg` (and `@neynar/nodejs-sdk` for api/agent-invaders/neynar-engine) marked `--external`; a generated minimal `package.json` installs just those externals into the runtime stage, which copies only that `node_modules` + the bundle — no `libs/`, no source, no dev deps. agent-invaders imports no `@flashcastr/*` lib, so its Dockerfile skips the `libs/` COPY entirely.
 - CI: `npm run typecheck` + `npm test` on push/PR (no Docker build in CI).
 
 ## Env
 
-See `.env.example`. Hardening knobs: `API_KEY`, `TRUST_PROXY_HOPS`, `RATE_LIMIT_SIGNUP_PER_10MIN`, `RATE_LIMIT_IDENTIFICATION_PER_MIN`, `CORS_ORIGINS`, `GRAPHQL_INTROSPECTION`, `CONSUMER_MAX_ATTEMPTS`, `BATCH_RETRY_DELAY_MS`, `TRENDING_CACHE_TTL_MS`. Production api runs with `GRAPHQL_INTROSPECTION=false` and `CORS_ORIGINS=https://www.flashcastr.app,https://flashcastr.app` (apex 307s to www); a new frontend origin, including Vercel previews, must be added there or its browser calls fail CORS.
+See `.env.example`. Hardening knobs: `API_KEY`, `TRUST_PROXY_HOPS`, `RATE_LIMIT_SIGNUP_PER_10MIN`, `RATE_LIMIT_IDENTIFICATION_PER_MIN`, `CORS_ORIGINS`, `GRAPHQL_INTROSPECTION`, `CONSUMER_MAX_ATTEMPTS`, `TRENDING_CACHE_TTL_MS`. Production api runs with `GRAPHQL_INTROSPECTION=false` and `CORS_ORIGINS=https://www.flashcastr.app,https://flashcastr.app` (apex 307s to www); a new frontend origin, including Vercel previews, must be added there or its browser calls fail CORS.
 
 ## Gotchas
 

@@ -1,13 +1,3 @@
-export interface MessageEnvelope<T> {
-  id: string;
-  timestamp: number;
-  source: string;
-  type: string;
-  version: string;
-  correlationId: string;
-  payload: T;
-}
-
 export interface FlashReceivedPayload {
   flash_id: number;
   img: string;

@@ -22,7 +22,6 @@ import type { PubSubEngine } from "./pubsub.js";
 import { InMemoryPubSub } from "./pubsub.js";
 import { PostgresSubscriptionBridge } from "./subscription-bridge.js";
 import { createSubscriptionMetricsHooks } from "./subscription-metrics.js";
-import { shutdownTracing } from "./tracing.js";
 import { scheduleGaugeUpdates } from "./gauges.js";
 import {
   registry,
@@ -166,7 +165,6 @@ async function main() {
     await server.stop();
     await subscriptionBridge.close();
     await closePool();
-    await shutdownTracing();
     await log.flush();
     process.exit(0);
   };

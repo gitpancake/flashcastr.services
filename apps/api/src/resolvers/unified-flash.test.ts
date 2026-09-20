@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createUnifiedFlashResolvers } from "./unified-flash.js";
 import { encodeFlashCursor } from "../sql/cursor.js";
 
+const imageUrlConfig = { apiPublicBase: "https://api.test", origin: "https://origin.test" };
+
 function fakeRow(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     flash_id: "12345",
@@ -9,6 +11,7 @@ function fakeRow(overrides: Partial<Record<string, unknown>> = {}) {
     player: "Bob",
     img: "img.png",
     ipfs_cid: "cid",
+    image_tier: null,
     text: "text",
     timestamp: "1700000000",
     flash_count: "1",
@@ -32,7 +35,7 @@ function fakePool(rows: ReturnType<typeof fakeRow>[]) {
 describe("unifiedFlashes legacy page mode (unchanged)", () => {
   it("builds the same WHERE/ORDER/LIMIT/OFFSET query as before, with no cursor logic involved", async () => {
     const pool = fakePool([fakeRow()]);
-    const resolvers = createUnifiedFlashResolvers(pool as any);
+    const resolvers = createUnifiedFlashResolvers(pool as any, imageUrlConfig);
 
     await resolvers.Query.unifiedFlashes(null, { page: 2, limit: 10, city: "Paris" });
 
@@ -48,7 +51,7 @@ describe("unifiedFlashes legacy page mode (unchanged)", () => {
 
   it("defaults page/limit the same way as before when omitted", async () => {
     const pool = fakePool([fakeRow()]);
-    const resolvers = createUnifiedFlashResolvers(pool as any);
+    const resolvers = createUnifiedFlashResolvers(pool as any, imageUrlConfig);
 
     await resolvers.Query.unifiedFlashes(null, {});
 
@@ -61,7 +64,7 @@ describe("unifiedFlashes legacy page mode (unchanged)", () => {
 describe("unifiedFlashes cursor mode", () => {
   it("decodes the cursor, uses keyset WHERE + ORDER, and issues no OFFSET", async () => {
     const pool = fakePool([fakeRow()]);
-    const resolvers = createUnifiedFlashResolvers(pool as any);
+    const resolvers = createUnifiedFlashResolvers(pool as any, imageUrlConfig);
     const cursor = encodeFlashCursor("1699999999", "999");
 
     await resolvers.Query.unifiedFlashes(null, { cursor, limit: 5, city: "Paris" });
@@ -80,7 +83,7 @@ describe("unifiedFlashes cursor mode", () => {
 
   it("ignores the page arg when a cursor is provided", async () => {
     const pool = fakePool([fakeRow()]);
-    const resolvers = createUnifiedFlashResolvers(pool as any);
+    const resolvers = createUnifiedFlashResolvers(pool as any, imageUrlConfig);
     const cursor = encodeFlashCursor(null, "999");
 
     await resolvers.Query.unifiedFlashes(null, { cursor, page: 40, limit: 5 });
@@ -91,7 +94,7 @@ describe("unifiedFlashes cursor mode", () => {
 
   it("throws on a malformed cursor instead of querying", async () => {
     const pool = fakePool([]);
-    const resolvers = createUnifiedFlashResolvers(pool as any);
+    const resolvers = createUnifiedFlashResolvers(pool as any, imageUrlConfig);
 
     await expect(resolvers.Query.unifiedFlashes(null, { cursor: "not-a-real-cursor!!" })).rejects.toThrow();
     expect(pool.query).not.toHaveBeenCalled();
@@ -102,7 +105,7 @@ describe("unifiedFlashes row mapping", () => {
   it("includes an encoded cursor field on every returned row, in both modes", async () => {
     const rows = [fakeRow({ flash_id: "1", timestamp: "1700000000" }), fakeRow({ flash_id: "2", timestamp: null })];
     const pool = fakePool(rows);
-    const resolvers = createUnifiedFlashResolvers(pool as any);
+    const resolvers = createUnifiedFlashResolvers(pool as any, imageUrlConfig);
 
     const pageResult = await resolvers.Query.unifiedFlashes(null, {});
     for (const row of pageResult) {
@@ -114,5 +117,49 @@ describe("unifiedFlashes row mapping", () => {
     for (const row of cursorResult) {
       expect(typeof row.cursor).toBe("string");
     }
+  });
+});
+
+describe("unifiedFlashes/unifiedFlash image_url", () => {
+  it("selects image_tier", async () => {
+    const pool = fakePool([fakeRow()]);
+    const resolvers = createUnifiedFlashResolvers(pool as any, imageUrlConfig);
+
+    await resolvers.Query.unifiedFlashes(null, {});
+
+    const [sql] = pool.query.mock.calls[0];
+    expect(sql).toContain("f.image_tier");
+  });
+
+  it("points at the api's stable route when image_tier is set", async () => {
+    const pool = fakePool([fakeRow({ image_tier: "feed" })]);
+    const resolvers = createUnifiedFlashResolvers(pool as any, imageUrlConfig);
+
+    const [row] = await resolvers.Query.unifiedFlashes(null, {});
+    expect(row.image_url).toBe("https://api.test/i/12345");
+  });
+
+  it("falls back to origin + img when image_tier is null (legacy row)", async () => {
+    const pool = fakePool([fakeRow({ image_tier: null, img: "/img.png" })]);
+    const resolvers = createUnifiedFlashResolvers(pool as any, imageUrlConfig);
+
+    const [row] = await resolvers.Query.unifiedFlashes(null, {});
+    expect(row.image_url).toBe("https://origin.test/img.png");
+  });
+
+  it("is null when neither image_tier nor img is set", async () => {
+    const pool = fakePool([fakeRow({ image_tier: null, img: null })]);
+    const resolvers = createUnifiedFlashResolvers(pool as any, imageUrlConfig);
+
+    const [row] = await resolvers.Query.unifiedFlashes(null, {});
+    expect(row.image_url).toBeNull();
+  });
+
+  it("computes image_url on unifiedFlash the same way", async () => {
+    const pool = fakePool([fakeRow({ image_tier: "keep" })]);
+    const resolvers = createUnifiedFlashResolvers(pool as any, imageUrlConfig);
+
+    const row = await resolvers.Query.unifiedFlash(null, { flash_id: "12345" });
+    expect(row?.image_url).toBe("https://api.test/i/12345");
   });
 });

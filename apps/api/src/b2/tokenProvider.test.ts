@@ -36,7 +36,7 @@ describe("createB2TokenProvider", () => {
 
     const [authorizeUrl, authorizeInit] = fetchMock.mock.calls[0];
     expect(authorizeUrl).toBe("https://api.backblazeb2.com/b2api/v4/b2_authorize_account");
-    expect(authorizeInit.method).toBe("POST");
+    expect(authorizeInit.method).toBe("GET");
     expect(authorizeInit.headers.Authorization).toMatch(/^Basic /);
 
     const [mintUrl, mintInit] = fetchMock.mock.calls[1];

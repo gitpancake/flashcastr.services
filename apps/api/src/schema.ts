@@ -110,6 +110,7 @@ export const typeDefs = `#graphql
     text: String
     timestamp: String
     flash_count: String
+    cursor: String
     farcaster_user: FarcasterUser
     identification: FlashIdentificationInfo
   }
@@ -149,7 +150,7 @@ export const typeDefs = `#graphql
     flashIdentifications(ipfs_cid: String, matched_flash_id: String, limit: Int = 50): [FlashIdentification!]!
     flashIdentification(id: Int!): FlashIdentification
     unifiedFlash(flash_id: String!): UnifiedFlash
-    unifiedFlashes(page: Int, limit: Int, city: String, player: String): [UnifiedFlash!]!
+    unifiedFlashes(page: Int, limit: Int, city: String, player: String, cursor: String): [UnifiedFlash!]!
   }
 
   type Mutation {

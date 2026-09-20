@@ -14,13 +14,23 @@ services:
     build:
       context: .
       dockerfile: apps/flash-engine/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_started
     env_file: .env.local
+    environment:
+      DATABASE_URL: postgresql://flashcastr:flashcastr@postgres:5432/flashcastr
 
   image-engine:
     build:
       context: .
       dockerfile: apps/image-engine/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_started
     env_file: .env.local
+    environment:
+      DATABASE_URL: postgresql://flashcastr:flashcastr@postgres:5432/flashcastr
 
   neynar-engine:
     build:

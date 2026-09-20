@@ -1,3 +1,7 @@
+import { createLogger } from "@flashcastr/logger";
+
+const log = createLogger("api");
+
 const B2_API_BASE = "https://api.backblazeb2.com";
 
 export interface B2TokenProviderOptions {
@@ -29,12 +33,12 @@ interface GetDownloadAuthorizationResponse {
 
 async function mintDownloadToken(options: Required<B2TokenProviderOptions>, prefix: string): Promise<string> {
   const authorizeResponse = await fetch(`${B2_API_BASE}/b2api/v4/b2_authorize_account`, {
-    method: "POST",
+    method: "GET",
     headers: {
       Authorization: `Basic ${Buffer.from(`${options.keyId}:${options.applicationKey}`).toString("base64")}`,
     },
   });
-  if (!authorizeResponse.ok) throw new Error("b2_authorize_account failed");
+  if (!authorizeResponse.ok) throw new Error(`b2_authorize_account failed: ${authorizeResponse.status}`);
   const authorizeBody = (await authorizeResponse.json()) as AuthorizeAccountResponse;
 
   const mintResponse = await fetch(
@@ -49,7 +53,7 @@ async function mintDownloadToken(options: Required<B2TokenProviderOptions>, pref
       }),
     },
   );
-  if (!mintResponse.ok) throw new Error("b2_get_download_authorization failed");
+  if (!mintResponse.ok) throw new Error(`b2_get_download_authorization failed: ${mintResponse.status}`);
   const mintBody = (await mintResponse.json()) as GetDownloadAuthorizationResponse;
   return mintBody.authorizationToken;
 }
@@ -71,8 +75,13 @@ export function createB2TokenProvider(options: B2TokenProviderOptions, now: () =
         const token = await mintDownloadToken(resolved, prefix);
         entries.set(prefix, { token, mintedAt: now(), validUntil: now() + resolved.validDurationSeconds * 1000 });
         return token;
-      } catch {
-        if (cached && cached.validUntil > now()) return cached.token;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        if (cached && cached.validUntil > now()) {
+          log.warn(`B2 download token remint failed for ${prefix}/, serving cached token: ${reason}`);
+          return cached.token;
+        }
+        log.error(`B2 download token mint failed for ${prefix}/: ${reason}`);
         return null;
       }
     },

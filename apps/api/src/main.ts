@@ -1,7 +1,5 @@
-import "./instrumentation.js";
-
-const { startApi } = await import("./server.js");
-const { createLogger } = await import("@flashcastr/logger");
+import { startApi } from "./server.js";
+import { createLogger } from "@flashcastr/logger";
 
 const log = createLogger("api");
 

@@ -41,6 +41,8 @@ COPY --from=build /app/dist/main.js ./dist/main.js
 COPY --from=build /app/dist/migrate.js ./dist/migrate.js
 COPY migrations/ ./migrations/
 
+ENV NODE_ENV=production
+
 EXPOSE 4000 9094
 
 CMD ["node", "dist/main.js"]

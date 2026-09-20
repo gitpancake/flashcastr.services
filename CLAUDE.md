@@ -83,7 +83,7 @@ Schema source lives in `migrations/` (see README "Local database") — `0001_bas
 
 ## Env
 
-See `.env.example`. Hardening knobs: `API_KEY`, `TRUST_PROXY_HOPS`, `RATE_LIMIT_SIGNUP_PER_10MIN`, `RATE_LIMIT_IDENTIFICATION_PER_MIN`, `CORS_ORIGINS`, `GRAPHQL_INTROSPECTION`, `CONSUMER_MAX_ATTEMPTS`, `TRENDING_CACHE_TTL_MS`. Production api runs with `GRAPHQL_INTROSPECTION=false` and `CORS_ORIGINS=https://www.flashcastr.app,https://flashcastr.app` (apex 307s to www); a new frontend origin, including Vercel previews, must be added there or its browser calls fail CORS.
+See `.env.example`. Hardening knobs: `API_KEY`, `TRUST_PROXY_HOPS`, `RATE_LIMIT_SIGNUP_PER_10MIN`, `RATE_LIMIT_IDENTIFICATION_PER_MIN`, `CORS_ORIGINS`, `GRAPHQL_INTROSPECTION`, `CONSUMER_MAX_ATTEMPTS`, `TRENDING_CACHE_TTL_MS`. Production api runs with `GRAPHQL_INTROSPECTION=false` and `CORS_ORIGINS=https://www.flashcastr.app,https://flashcastr.app` (apex 307s to www); a new frontend origin, including Vercel previews, must be added there or its browser calls fail CORS. `NODE_ENV` must be `production` on `flashcastr.api.9094` — today the only one of the 5 Railway services missing it (the api's Dockerfile now sets it for local `docker run` parity, but Railway's own service variable is what matters in production). The real guard against leaking GraphQL stack traces / raw resolver error messages is `errorFormattingOptions` (`apps/api/src/errorFormatting.ts`, spread into the `ApolloServer` constructor) — `includeStacktraceInErrorResponses: false` plus a `formatError` that genericizes any error still carrying the default `INTERNAL_SERVER_ERROR` code. That guard holds regardless of `NODE_ENV`; don't treat the env var alone as the fix.
 
 ## Gotchas
 

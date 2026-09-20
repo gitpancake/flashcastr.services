@@ -25,6 +25,7 @@ import { createSubscriptionMetricsHooks } from "./subscription-metrics.js";
 import { scheduleGaugeUpdates } from "./gauges.js";
 import { createB2TokenProvider } from "./b2/tokenProvider.js";
 import { createImageRedirectHandler } from "./imageRedirect.js";
+import { errorFormattingOptions } from "./errorFormatting.js";
 import {
   registry,
   startMetricsServer,
@@ -113,6 +114,7 @@ const metricsPlugin: ApolloServerPlugin<BaseContext> = {
 const server = new ApolloServer({
   schema,
   introspection: INTROSPECTION_ENABLED,
+  ...errorFormattingOptions,
   plugins: [
     ApolloServerPluginDrainHttpServer({ httpServer }),
     {

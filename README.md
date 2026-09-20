@@ -31,10 +31,16 @@ Space Invaders API
 | Service | Role | Deploy |
 |---------|------|--------|
 | **flash-engine** | Cron-fetches flashes from Space Invaders API, writes to Postgres, enqueues `pin` jobs | Railway |
-| **image-engine** | `JobWorker` claims `pin` jobs, downloads + pins images to IPFS via Pinata, enqueues `cast` jobs | Railway |
-| **neynar-engine** | `JobWorker` claims `cast` jobs, casts to Farcaster via Neynar SDK, retry worker for failed casts | Railway |
-| **api** | GraphQL API (Apollo Server 5) with `LISTEN`/`NOTIFY`-backed WebSocket subscriptions | Railway |
+| **image-engine** | `JobWorker` claims `pin` jobs, downloads images and pins them via the store selected by `IMAGE_STORE` (defaults to legacy Pinata/IPFS; `b2` dark-launches a B2 pinner writing the `feed/` tier and stamping `image_tier`), enqueues `cast` jobs | Railway |
+| **neynar-engine** | `JobWorker` claims `cast` jobs, casts to Farcaster via Neynar SDK, promotes a flash's image from the B2 `feed/` tier to the permanent `keep/` tier before publishing, retry worker for failed casts | Railway |
+| **api** | GraphQL API (Apollo Server 5) with `LISTEN`/`NOTIFY`-backed WebSocket subscriptions; `/i/:flash_id` mints a scoped, prefix-limited B2 download-authorization token server-side and 302s to the tokened object URL (the bucket is `allPrivate`, not public) | Railway |
 | **agent-invaders** | LangGraph agent (mentions, daily digest) — no `@flashcastr/*` lib imports | Railway |
+
+**Scripts** (not deployed as services):
+
+| Script | Role | Run |
+|--------|------|-----|
+| `scripts/promote-keep-set.ts` (`npm run promote-keep-set`) | One-shot sweep: copies pending keep-set rows from `feed/`(B2)/Pinata into the permanent `keep/` B2 tier, verifying SHA-256 per object before flipping `image_tier` to `keep`; idempotent, `--dry-run` prints the pending count without writing. A `scripts/Dockerfile` now bundles it standalone (esbuild `--format=cjs`, `pg` external, `CMD ["node","dist/promote-keep-set.js"]`, no exposed port) for a scheduled container, but it is not yet wired up as a live Railway cron service — that wiring is a documented follow-up | Manual / planned Railway cron |
 
 ## Project Structure
 
@@ -121,14 +127,22 @@ Key variables per service:
 | `DATABASE_URL` | All (job-pipeline services) | Postgres connection string |
 | `PROXY_LIST` | flash-engine, image-engine | Comma-separated proxy URLs |
 | `CRON_SCHEDULE`, `OFF_PEAK_MIN_INTERVAL_MS` | flash-engine | Poll cadence |
-| `PINATA_JWT` | image-engine | Pinata API JWT for IPFS pinning |
 | `IMAGE_STORE` | image-engine | `pinata` (default) or `b2` — which pinner writes new flashes. Defaults to `pinata`, so behavior is unchanged with no env changes; `b2` is dark/unused in production until a documented cockpit flip sets it on the service |
-| `B2_S3_ENDPOINT`, `B2_REGION`, `B2_BUCKET`, `B2_PUBLIC_BASE`, `B2_KEY_ID`, `B2_APPLICATION_KEY` | image-engine | Backblaze B2 S3-compatible endpoint/bucket/credentials, only read when `IMAGE_STORE=b2` |
+| `PINATA_JWT` | image-engine | Pinata API JWT for IPFS pinning; still required today since `IMAGE_STORE` defaults to `pinata` |
+| `B2_S3_ENDPOINT`, `B2_REGION`, `B2_BUCKET`, `B2_KEY_ID`, `B2_APPLICATION_KEY`, `B2_PUBLIC_BASE` | image-engine | Backblaze B2 S3-compatible endpoint/region/bucket and the `feed/`-scoped pinning key pair, plus the base URL image-engine builds the `feed/` gateway URL from; only read when `IMAGE_STORE=b2` |
 | `CONSUMER_CONCURRENCY`, `CONSUMER_RATE_LIMIT`, `CONSUMER_MAX_ATTEMPTS` | image-engine | `pin`-job worker concurrency/rate limit/max attempts |
+| `API_PUBLIC_BASE` | image-engine, api | Public base URL the api is reachable at; image-engine only requires it once a B2 tier is live (used to build the `/i/:flash_id` image URL it stores), api always reads it (defaults `http://localhost:4000`) to build that same URL |
 | `NEYNAR_API_KEY` | neynar-engine, agent-invaders | Neynar API key for Farcaster |
 | `SIGNER_ENCRYPTION_KEY` | neynar-engine | Hex key for decrypting signer UUIDs |
 | `RETRY_INTERVAL_MS` | neynar-engine | Failed-cast retry worker interval |
 | `CAST_JOB_CONCURRENCY`, `CAST_JOB_LEASE_MS`, `CAST_JOB_MAX_ATTEMPTS`, `CAST_JOB_POLL_INTERVAL_MS` | neynar-engine | `cast`-job worker tuning |
+| `B2_S3_ENDPOINT`, `B2_REGION`, `B2_BUCKET`, `B2_PROMOTE_KEY_ID`, `B2_PROMOTE_KEY` | neynar-engine | Reused (endpoint/region/bucket) plus a separate promote-scoped key pair for the feed-to-keep promotion `neynar-engine` does before publishing a cast; unset (optional) until a flash actually reaches `image_tier='feed'` |
+| `B2_S3_ENDPOINT`, `B2_REGION`, `B2_BUCKET`, `B2_PROMOTE_KEY_ID`, `B2_PROMOTE_KEY` | `promote-keep-set` script | Same B2 bucket, and the promote key pair — never the image-engine key, which is confined to `feed/` and cannot write `keep/` |
+| `PINATA_GATEWAY` | `promote-keep-set` script | Legacy-row fetches during promotion; optional, defaults to a dedicated (faster) gateway |
+| `PROMOTE_CONCURRENCY`, `PROMOTE_RATE_LIMIT` | `promote-keep-set` script | Sweep concurrency (default 8) and requests/min against the gateway + B2 (default 600) |
+| `ORIGIN` | api | Space Invaders origin base URL the `image_url` resolver falls back to for legacy (no `image_tier`) rows; defaults `https://api.space-invaders.com` |
+| `B2_DOWNLOAD_BASE`, `B2_BUCKET` | api | Backblaze B2 download host and bucket name the `/i/:flash_id` redirect builds its tokened URL against |
+| `B2_BUCKET_ID`, `B2_API_KEY_ID`, `B2_API_KEY` | api | Bucket id and a download-only key pair the api uses to mint scoped, prefix-limited download-authorization tokens server-side (the bucket itself is `allPrivate`, never public) |
 | `API_KEY`, `TRUST_PROXY_HOPS`, `RATE_LIMIT_SIGNUP_PER_10MIN`, `RATE_LIMIT_IDENTIFICATION_PER_MIN`, `CORS_ORIGINS`, `GRAPHQL_INTROSPECTION` | api | Hardening knobs (see project `CLAUDE.md`) |
 | `METRICS_PORT` | All | Prometheus metrics port |
 | `LOKI_URL` | All (optional) | Loki URL for log shipping (e.g., `http://loki:3100`) |

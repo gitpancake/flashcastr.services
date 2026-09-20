@@ -1,0 +1,22 @@
+-- Adds the composite index unifiedFlashes' keyset pagination needs. See
+-- ticket platform/unified-flashes-deep-paging.md.
+--
+-- unifiedFlashes currently paginates flashes (~8.1M rows) with LIMIT/OFFSET,
+-- so a deep page costs roughly page x limit row lookups before the LIMIT
+-- window starts. The resolver is moving to keyset pagination (a WHERE on
+-- (timestamp, flash_id) < (cursor) instead of OFFSET), which only helps if
+-- there's an index sorted the same way the query filters and orders.
+--
+-- The expression text here -- COALESCE("timestamp", 'infinity'::timestamp)
+-- DESC, flash_id DESC -- must match WhereBuilder.keysetBefore's WHERE clause
+-- and the resolver's ORDER BY byte-for-byte, or the planner won't recognize
+-- this index as satisfying either. COALESCE(...,'infinity') sorts NULL
+-- timestamps as the maximum value, which is the same place plain
+-- `ORDER BY timestamp DESC` already puts them (Postgres sorts NULLs first in
+-- DESC order by default) -- so this index changes performance, not result
+-- ordering, for existing OFFSET-based callers too.
+--
+-- Plain CREATE INDEX (not CONCURRENTLY): the migrator runs this file in one
+-- transaction, and CONCURRENTLY cannot run inside one.
+CREATE INDEX idx_flashes_timestamp_id_keyset
+    ON public.flashes (COALESCE("timestamp", 'infinity'::timestamp) DESC, flash_id DESC);

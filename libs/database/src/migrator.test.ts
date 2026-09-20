@@ -8,9 +8,9 @@ class FakePool implements MigratorPool {
   appliedNames = new Set<string>();
   executedMigrationSql: string[] = [];
   clientLog: string[] = [];
-  lockLog: string[] = [];
-  connectCount = 0;
-  releasedClients = 0;
+  // Ordered across every connect()'d client, so a test can assert the lock
+  // actually brackets the critical section rather than merely being called.
+  sequence: string[] = [];
 
   async query(sql: string, params: unknown[] = []) {
     if (sql.startsWith("CREATE TABLE IF NOT EXISTS schema_migrations")) return { rows: [] };
@@ -25,20 +25,23 @@ class FakePool implements MigratorPool {
   }
 
   async connect() {
-    this.connectCount += 1;
     const log = this.clientLog;
-    const lockLog = this.lockLog;
+    const sequence = this.sequence;
     const applied = this.appliedNames;
     const executed = this.executedMigrationSql;
-    const pool = this;
     return {
       async query(sql: string, params: unknown[] = []) {
-        if (sql.startsWith("SELECT pg_advisory_lock") || sql.startsWith("SELECT pg_advisory_unlock")) {
-          lockLog.push(sql);
+        if (sql.startsWith("SELECT pg_advisory_lock")) {
+          sequence.push("lock:acquire");
+          return { rows: [] };
+        }
+        if (sql.startsWith("SELECT pg_advisory_unlock")) {
+          sequence.push("lock:release");
           return { rows: [] };
         }
         if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
           log.push(sql);
+          sequence.push(sql);
           return { rows: [] };
         }
         if (sql.startsWith("INSERT INTO schema_migrations")) {
@@ -46,11 +49,10 @@ class FakePool implements MigratorPool {
           return { rows: [] };
         }
         executed.push(sql);
+        sequence.push("exec");
         return { rows: [] };
       },
-      release() {
-        pool.releasedClients += 1;
-      },
+      release() {},
     };
   }
 }
@@ -169,16 +171,13 @@ describe("runMigrations", () => {
     expect(pool.appliedNames.has("0002_drop_deleted.sql")).toBe(false);
   });
 
-  it("acquires and releases an advisory lock around the run", async () => {
+  it("holds the lock around the entire run, not just around acquiring it", async () => {
     const pool = new FakePool();
     const migrations = [{ name: "0001_baseline.sql", sql: "CREATE TABLE foo (id int);" }];
 
     await runMigrations(pool, migrations);
 
-    expect(pool.lockLog).toEqual([
-      expect.stringContaining("pg_advisory_lock"),
-      expect.stringContaining("pg_advisory_unlock"),
-    ]);
+    expect(pool.sequence).toEqual(["lock:acquire", "BEGIN", "exec", "COMMIT", "lock:release"]);
   });
 
   it("releases the advisory lock even when a migration fails", async () => {
@@ -202,9 +201,6 @@ describe("runMigrations", () => {
 
     await expect(runMigrations(pool, migrations)).rejects.toThrow("boom");
 
-    expect(pool.lockLog).toEqual([
-      expect.stringContaining("pg_advisory_lock"),
-      expect.stringContaining("pg_advisory_unlock"),
-    ]);
+    expect(pool.sequence).toEqual(["lock:acquire", "BEGIN", "ROLLBACK", "lock:release"]);
   });
 });

@@ -8,6 +8,9 @@ class FakePool implements MigratorPool {
   appliedNames = new Set<string>();
   executedMigrationSql: string[] = [];
   clientLog: string[] = [];
+  lockLog: string[] = [];
+  connectCount = 0;
+  releasedClients = 0;
 
   async query(sql: string, params: unknown[] = []) {
     if (sql.startsWith("CREATE TABLE IF NOT EXISTS schema_migrations")) return { rows: [] };
@@ -22,11 +25,18 @@ class FakePool implements MigratorPool {
   }
 
   async connect() {
+    this.connectCount += 1;
     const log = this.clientLog;
+    const lockLog = this.lockLog;
     const applied = this.appliedNames;
     const executed = this.executedMigrationSql;
+    const pool = this;
     return {
       async query(sql: string, params: unknown[] = []) {
+        if (sql.startsWith("SELECT pg_advisory_lock") || sql.startsWith("SELECT pg_advisory_unlock")) {
+          lockLog.push(sql);
+          return { rows: [] };
+        }
         if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
           log.push(sql);
           return { rows: [] };
@@ -38,7 +48,9 @@ class FakePool implements MigratorPool {
         executed.push(sql);
         return { rows: [] };
       },
-      release() {},
+      release() {
+        pool.releasedClients += 1;
+      },
     };
   }
 }
@@ -142,5 +154,44 @@ describe("runMigrations", () => {
     expect(pool.executedMigrationSql).toEqual([]);
     expect(pool.appliedNames.has("0001_baseline.sql")).toBe(true);
     expect(pool.appliedNames.has("0002_drop_deleted.sql")).toBe(false);
+  });
+
+  it("acquires and releases an advisory lock around the run", async () => {
+    const pool = new FakePool();
+    const migrations = [{ name: "0001_baseline.sql", sql: "CREATE TABLE foo (id int);" }];
+
+    await runMigrations(pool, migrations);
+
+    expect(pool.lockLog).toEqual([
+      expect.stringContaining("pg_advisory_lock"),
+      expect.stringContaining("pg_advisory_unlock"),
+    ]);
+  });
+
+  it("releases the advisory lock even when a migration fails", async () => {
+    const pool = new FakePool();
+    pool.query = async (sql: string, params: unknown[] = []) => {
+      if (sql.startsWith("CREATE TABLE IF NOT EXISTS schema_migrations")) return { rows: [] };
+      if (sql.startsWith("SELECT name FROM schema_migrations")) return { rows: [] };
+      throw new Error(`unexpected pool.query: ${sql}`);
+    };
+    const originalConnect = pool.connect.bind(pool);
+    pool.connect = async () => {
+      const client = await originalConnect();
+      const originalClientQuery = client.query.bind(client);
+      client.query = async (sql: string, params: unknown[] = []) => {
+        if (sql === "CREATE TABLE foo (id int);") throw new Error("boom");
+        return originalClientQuery(sql, params);
+      };
+      return client;
+    };
+    const migrations = [{ name: "0001_baseline.sql", sql: "CREATE TABLE foo (id int);" }];
+
+    await expect(runMigrations(pool, migrations)).rejects.toThrow("boom");
+
+    expect(pool.lockLog).toEqual([
+      expect.stringContaining("pg_advisory_lock"),
+      expect.stringContaining("pg_advisory_unlock"),
+    ]);
   });
 });

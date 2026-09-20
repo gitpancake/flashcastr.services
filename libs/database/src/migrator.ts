@@ -39,6 +39,9 @@ export interface RunMigrationsOptions {
   baselineUpperBound?: string;
 }
 
+// Arbitrary constant identifying the migration lock; must stay fixed across deploys.
+const MIGRATION_LOCK_ID = 78_246_513;
+
 async function ensureMigrationsTable(pool: MigratorPool): Promise<void> {
   await pool.query(
     "CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"
@@ -67,40 +70,48 @@ export async function runMigrations(
     }
   }
 
-  await ensureMigrationsTable(pool);
-  const applied = await loadAppliedNames(pool);
-  const results: MigrationResult[] = [];
+  const lockClient = await pool.connect();
+  try {
+    await lockClient.query("SELECT pg_advisory_lock($1)", [MIGRATION_LOCK_ID]);
 
-  for (const migration of migrations) {
-    if (applied.has(migration.name)) {
-      results.push({ name: migration.name, status: "skipped" });
-      continue;
-    }
+    await ensureMigrationsTable(pool);
+    const applied = await loadAppliedNames(pool);
+    const results: MigrationResult[] = [];
 
-    if (options.baseline) {
-      if (migration.name > options.baselineUpperBound!) {
-        results.push({ name: migration.name, status: "pending" });
+    for (const migration of migrations) {
+      if (applied.has(migration.name)) {
+        results.push({ name: migration.name, status: "skipped" });
         continue;
       }
-      await pool.query("INSERT INTO schema_migrations (name) VALUES ($1)", [migration.name]);
-      results.push({ name: migration.name, status: "baselined" });
-      continue;
+
+      if (options.baseline) {
+        if (migration.name > options.baselineUpperBound!) {
+          results.push({ name: migration.name, status: "pending" });
+          continue;
+        }
+        await pool.query("INSERT INTO schema_migrations (name) VALUES ($1)", [migration.name]);
+        results.push({ name: migration.name, status: "baselined" });
+        continue;
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(migration.sql);
+        await client.query("INSERT INTO schema_migrations (name) VALUES ($1)", [migration.name]);
+        await client.query("COMMIT");
+        results.push({ name: migration.name, status: "applied" });
+      } catch (err) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw err;
+      } finally {
+        client.release();
+      }
     }
 
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      await client.query(migration.sql);
-      await client.query("INSERT INTO schema_migrations (name) VALUES ($1)", [migration.name]);
-      await client.query("COMMIT");
-      results.push({ name: migration.name, status: "applied" });
-    } catch (err) {
-      await client.query("ROLLBACK").catch(() => undefined);
-      throw err;
-    } finally {
-      client.release();
-    }
+    return results;
+  } finally {
+    await lockClient.query("SELECT pg_advisory_unlock($1)", [MIGRATION_LOCK_ID]).catch(() => undefined);
+    lockClient.release();
   }
-
-  return results;
 }

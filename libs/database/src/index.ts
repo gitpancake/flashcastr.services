@@ -20,3 +20,4 @@ export {
   type FlashStoredNotification,
   type FlashCastedNotification,
 } from "./notify.js";
+export { buildImageUrl, type ImageUrlRow, type ImageUrlConfig } from "./image-url.js";

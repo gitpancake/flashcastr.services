@@ -44,7 +44,7 @@ describe("copyCandidateToKeepTier", () => {
       destination
     );
 
-    expect(outcome).toEqual({ flashId: 1, key: "sha256hash123", verified: true });
+    expect(outcome).toEqual({ flashId: 1, key: "keep/sha256hash123", verified: true });
     expect(destination.objects.get("keep/sha256hash123")).toEqual(feedBytes);
   });
 
@@ -67,7 +67,7 @@ describe("copyCandidateToKeepTier", () => {
       destination
     );
 
-    expect(outcome).toEqual({ flashId: 2, key: "QmLegacyOpaqueCid", verified: true });
+    expect(outcome).toEqual({ flashId: 2, key: "keep/QmLegacyOpaqueCid", verified: true });
     expect(destination.objects.get("keep/QmLegacyOpaqueCid")).toEqual(legacyBytes);
   });
 
@@ -87,7 +87,7 @@ describe("copyCandidateToKeepTier", () => {
       destination
     );
 
-    expect(outcome).toEqual({ flashId: 3, key: "corrupt-cid", verified: false });
+    expect(outcome).toEqual({ flashId: 3, key: "keep/corrupt-cid", verified: false });
   });
 
   it("propagates an error thrown by source.fetchFeedBytes instead of swallowing it", async () => {

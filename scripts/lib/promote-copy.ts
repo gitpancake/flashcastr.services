@@ -50,7 +50,7 @@ export async function copyCandidateToKeepTier(
 
   return {
     flashId: candidate.flash_id,
-    key: candidate.ipfs_cid,
+    key,
     verified: readHash === writtenHash,
   };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { formatSummary, processCandidate, selectPending } from "./promote-keep-set.js";
+import { formatSummary, processCandidate, runWithConcurrency, selectPending } from "./promote-keep-set.js";
 import type { CopyDestination, CopySource } from "./lib/promote-copy.js";
 
 const candidate = { flash_id: 42, ipfs_cid: "hash-42", image_tier: "feed" as const };
@@ -93,5 +93,28 @@ describe("processCandidate", () => {
 
     expect(result).toEqual({ promoted: false, failure: { flashId: 42, reason: "404 from B2" } });
     expect(setTier).not.toHaveBeenCalled();
+  });
+});
+
+describe("runWithConcurrency", () => {
+  it("runs every item through the worker and returns results in input order", async () => {
+    const results = await runWithConcurrency([1, 2, 3, 4], 2, async (n) => n * 10);
+
+    expect(results).toEqual([10, 20, 30, 40]);
+  });
+
+  it("never runs more than `limit` workers at once", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    await runWithConcurrency([1, 2, 3, 4, 5, 6], 2, async (n) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight--;
+      return n;
+    });
+
+    expect(maxInFlight).toBeLessThanOrEqual(2);
   });
 });

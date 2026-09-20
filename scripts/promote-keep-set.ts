@@ -13,7 +13,10 @@
  * Requires DATABASE_URL, B2_S3_ENDPOINT, B2_REGION, B2_BUCKET,
  * B2_PROMOTE_KEY_ID, B2_PROMOTE_KEY (the promote key pair only — never the
  * image-engine key, which is confined to the feed/ prefix and cannot write
- * keep/).
+ * keep/). Optional: PINATA_GATEWAY (legacy-row fetches; defaults to Henry's
+ * dedicated gateway, ~10x faster than the public gateway.pinata.cloud),
+ * PROMOTE_CONCURRENCY (default 8), PROMOTE_RATE_LIMIT (requests/min against
+ * the gateway + B2, default 600).
  */
 import { config } from "dotenv";
 config();
@@ -21,12 +24,17 @@ config();
 import axios from "axios";
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getPool, closePool, PostgresFlashesDb, type KeepSetCandidate } from "@flashcastr/database";
-import { requireEnv, intEnv } from "@flashcastr/config";
+import { requireEnv, intEnv, optionalEnv } from "@flashcastr/config";
 import { createLogger } from "@flashcastr/logger";
 import { copyCandidateToKeepTier, type CopyDestination, type CopySource } from "./lib/promote-copy.js";
 
 const log = createLogger("promote-keep-set");
-const PINATA_GATEWAY = "https://gateway.pinata.cloud/ipfs";
+
+// The public gateway.pinata.cloud is ~10x slower than Henry's dedicated
+// gateway (same Pinata account) — measured 4.6-6.7s vs 0.4-0.9s per object.
+// Overridable via PINATA_GATEWAY since it's the same knob the frontend uses
+// (invaders/flashcastr src/lib/constants.ts).
+const DEFAULT_PINATA_GATEWAY = "https://fuchsia-rich-lungfish-648.mypinata.cloud/ipfs";
 
 export function selectPending(candidates: KeepSetCandidate[]): KeepSetCandidate[] {
   return candidates.filter((candidate) => candidate.image_tier !== "keep");
@@ -79,7 +87,7 @@ async function bodyToBuffer(body: unknown): Promise<Buffer> {
   return Buffer.from(await (body as S3ResponseBody).transformToByteArray());
 }
 
-function buildSource(client: S3Client, bucket: string, rateLimiter: RateLimiter): CopySource {
+function buildSource(client: S3Client, bucket: string, rateLimiter: RateLimiter, gatewayUrl: string): CopySource {
   return {
     async fetchFeedBytes(hash) {
       await rateLimiter.wait();
@@ -88,7 +96,7 @@ function buildSource(client: S3Client, bucket: string, rateLimiter: RateLimiter)
     },
     async fetchPinataBytes(cid) {
       await rateLimiter.wait();
-      const res = await axios.get<ArrayBuffer>(`${PINATA_GATEWAY}/${cid}`, {
+      const res = await axios.get<ArrayBuffer>(`${gatewayUrl}/${cid}`, {
         responseType: "arraybuffer",
         timeout: 30000,
       });
@@ -140,6 +148,31 @@ export async function processCandidate(
   }
 }
 
+/**
+ * Runs `worker` over `items` with at most `limit` in flight at once,
+ * returning results in input order. Each worker call is independent, so a
+ * rejection propagates for that slot only if `worker` itself throws —
+ * processCandidate never does, it reports failures instead.
+ */
+export async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function runNext(): Promise<void> {
+    const index = nextIndex++;
+    if (index >= items.length) return;
+    results[index] = await worker(items[index]);
+    await runNext();
+  }
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => runNext()));
+  return results;
+}
+
 async function main(): Promise<void> {
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is not set");
 
@@ -168,20 +201,18 @@ async function main(): Promise<void> {
         secretAccessKey: requireEnv("B2_PROMOTE_KEY"),
       },
     });
-    const rateLimiter = new RateLimiter(intEnv("PROMOTE_RATE_LIMIT", 120));
-    const source = buildSource(client, bucket, rateLimiter);
+    const rateLimiter = new RateLimiter(intEnv("PROMOTE_RATE_LIMIT", 600));
+    const gatewayUrl = optionalEnv("PINATA_GATEWAY", DEFAULT_PINATA_GATEWAY);
+    const source = buildSource(client, bucket, rateLimiter, gatewayUrl);
     const destination = buildDestination(client, bucket);
+    const concurrency = intEnv("PROMOTE_CONCURRENCY", 8);
 
-    const failures: PromoteFailure[] = [];
-    let promoted = 0;
+    const results = await runWithConcurrency(pending, concurrency, (candidate) =>
+      processCandidate(candidate, source, destination, (flashId, tier) => flashesDb.setImageTier(pool, flashId, tier))
+    );
 
-    for (const candidate of pending) {
-      const result = await processCandidate(candidate, source, destination, (flashId, tier) =>
-        flashesDb.setImageTier(pool, flashId, tier)
-      );
-      if (result.promoted) promoted++;
-      else if (result.failure) failures.push(result.failure);
-    }
+    const failures = results.flatMap((result) => (result.failure ? [result.failure] : []));
+    const promoted = results.filter((result) => result.promoted).length;
 
     const summary: PromoteSummary = {
       total: candidates.length,

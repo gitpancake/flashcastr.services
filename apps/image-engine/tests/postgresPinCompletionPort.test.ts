@@ -51,7 +51,10 @@ describe.skipIf(!process.env.DATABASE_URL)("PostgresPinCompletionPort", () => {
     await flashJobsDb.enqueue(pool, flashId, "pin");
     const [claimed] = await flashJobsDb.claim("pin", 1, 60_000, 5);
 
-    const port = new PostgresPinCompletionPort(pool, flashesDb, flashJobsDb, claimed.attempts, null);
+    const port = new PostgresPinCompletionPort(pool, flashesDb, flashJobsDb, claimed.attempts, null, {
+      apiPublicBase: "https://api.test",
+      origin: "https://origin.test",
+    });
     await port.complete(buildPayload(flashId));
 
     const { rows: flashRows } = await pool.query(
@@ -88,7 +91,10 @@ describe.skipIf(!process.env.DATABASE_URL)("PostgresPinCompletionPort", () => {
     await flashJobsDb.claim("pin", 1, 60_000, 5);
 
     // Worker A, unaware it lost the lease, tries to settle using its stale attempts.
-    const port = new PostgresPinCompletionPort(pool, flashesDb, flashJobsDb, staleAttempts, null);
+    const port = new PostgresPinCompletionPort(pool, flashesDb, flashJobsDb, staleAttempts, null, {
+      apiPublicBase: "https://api.test",
+      origin: "https://origin.test",
+    });
     await port.complete(buildPayload(flashId));
 
     const { rows: flashRows } = await pool.query("SELECT ipfs_cid FROM flashes WHERE flash_id = $1", [flashId]);
@@ -114,7 +120,10 @@ describe.skipIf(!process.env.DATABASE_URL)("PostgresPinCompletionPort", () => {
     await flashJobsDb.enqueue(pool, flashId, "pin");
     const [claimed] = await flashJobsDb.claim("pin", 1, 60_000, 5);
 
-    const port = new PostgresPinCompletionPort(pool, flashesDb, flashJobsDb, claimed.attempts, "feed");
+    const port = new PostgresPinCompletionPort(pool, flashesDb, flashJobsDb, claimed.attempts, "feed", {
+      apiPublicBase: "https://api.test",
+      origin: "https://origin.test",
+    });
     await port.complete(buildPayload(flashId));
 
     const { rows: flashRows } = await pool.query(

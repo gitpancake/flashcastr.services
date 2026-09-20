@@ -4,7 +4,7 @@ import { CircuitBreakerOpenError, type CircuitBreaker } from "@flashcastr/resili
 import { createLogger } from "@flashcastr/logger";
 import type { Counter } from "@flashcastr/metrics";
 import type { PostgresFlashesDb, FlashJobsDb } from "@flashcastr/database";
-import { withTransaction, notifyFlashStored } from "@flashcastr/database";
+import { withTransaction, notifyFlashStored, buildImageUrl, type ImageUrlConfig } from "@flashcastr/database";
 import type { FlashReceivedPayload, ImagePinnedPayload, FlashStoredPayload } from "@flashcastr/shared-types";
 import type { ImageSource } from "./imageSource.js";
 import type { Pinner } from "./pinner.js";
@@ -19,8 +19,8 @@ export interface PinCompletionPort {
   complete(payload: ImagePinnedPayload, correlationId: string): Promise<void>;
 }
 
-function toStoredPayload(payload: ImagePinnedPayload): FlashStoredPayload {
-  return { ...payload, db_flash_id: payload.flash_id, stored_at: Date.now() };
+function toStoredPayload(payload: ImagePinnedPayload, imageUrl: string | null): FlashStoredPayload {
+  return { ...payload, db_flash_id: payload.flash_id, stored_at: Date.now(), image_url: imageUrl };
 }
 
 // expectedAttempts fences this settle against the pin job's lease (see
@@ -35,7 +35,8 @@ export class PostgresPinCompletionPort implements PinCompletionPort {
     private readonly flashesDb: PostgresFlashesDb,
     private readonly flashJobsDb: FlashJobsDb,
     private readonly expectedAttempts: number,
-    private readonly imageTier: string | null
+    private readonly imageTier: string | null,
+    private readonly imageUrlConfig: ImageUrlConfig
   ) {}
 
   async complete(payload: ImagePinnedPayload): Promise<void> {
@@ -48,7 +49,11 @@ export class PostgresPinCompletionPort implements PinCompletionPort {
         await this.flashesDb.updateIpfsCid(client, payload.flash_id, payload.ipfs_cid);
       }
       await this.flashJobsDb.enqueue(client, payload.flash_id, "cast");
-      await notifyFlashStored(client, toStoredPayload(payload));
+      const imageUrl = buildImageUrl(
+        { flash_id: payload.flash_id, image_tier: this.imageTier, img: payload.img },
+        this.imageUrlConfig
+      );
+      await notifyFlashStored(client, toStoredPayload(payload, imageUrl));
     });
   }
 }

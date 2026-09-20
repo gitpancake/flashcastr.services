@@ -16,6 +16,7 @@ export interface ImagePinnedPayload extends FlashReceivedPayload {
 export interface FlashStoredPayload extends ImagePinnedPayload {
   db_flash_id: number;
   stored_at: number;
+  image_url: string | null;
 }
 
 export interface FlashCastedPayload extends FlashStoredPayload {

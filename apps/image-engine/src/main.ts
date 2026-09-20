@@ -25,6 +25,11 @@ const registry = createMetricsRegistry("image-engine");
 const BASE_URL = "https://api.space-invaders.com";
 const PINATA_GATEWAY = "https://gateway.pinata.cloud/ipfs";
 
+const IMAGE_URL_CONFIG = {
+  apiPublicBase: optionalEnv("API_PUBLIC_BASE", ""),
+  origin: BASE_URL,
+};
+
 // Dark launch (platform/backblaze-image-storage/01-b2-pinner-and-tier): the
 // pinata path is byte-for-byte today's behavior; b2 is wired but inert until
 // an operator sets IMAGE_STORE=b2 on this service.
@@ -150,7 +155,14 @@ const jobWorker = new JobWorker(flashJobsDb, {
       timestamp: Math.floor(job.timestamp.getTime() / 1000),
       flash_count: job.flash_count,
     };
-    const completionPort = new PostgresPinCompletionPort(pool, flashesDb, flashJobsDb, job.attempts, imageTier);
+    const completionPort = new PostgresPinCompletionPort(
+      pool,
+      flashesDb,
+      flashJobsDb,
+      job.attempts,
+      imageTier,
+      IMAGE_URL_CONFIG
+    );
     await buildImagePinner(completionPort).handle(flash, "");
   },
 });

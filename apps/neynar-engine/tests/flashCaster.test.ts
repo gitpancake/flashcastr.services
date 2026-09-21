@@ -290,6 +290,37 @@ describe("FlashCaster.handle", () => {
 
     expect(gateway.publishCast).not.toHaveBeenCalled();
   });
+
+  it("promotes a feed-tier image to keep for an auto_cast-off user without publishing", async () => {
+    const flashes = buildFlashesDb();
+    const users = buildUsersDb({ getByUsername: vi.fn(async () => buildUser({ auto_cast: false })) });
+    const gateway = buildGateway();
+    const promoteGateway = buildPromoteGateway();
+    const imageTier = buildImageTierStore();
+    const flashCaster = buildFlashCaster({ users, flashes, gateway, promoteGateway, imageTier });
+
+    await flashCaster.handle(buildPayload({ image_tier: "feed" }));
+
+    expect(promoteGateway.promoteFeedToKeep).toHaveBeenCalledWith(1, "cid123");
+    expect(imageTier.markKept).toHaveBeenCalledWith(1);
+    expect(gateway.publishCast).not.toHaveBeenCalled();
+  });
+
+  it("a promotion failure for an auto_cast-off user still propagates as a retryable error", async () => {
+    const flashes = buildFlashesDb();
+    const users = buildUsersDb({ getByUsername: vi.fn(async () => buildUser({ auto_cast: false })) });
+    const gateway = buildGateway();
+    const promoteGateway = buildPromoteGateway({
+      promoteFeedToKeep: vi.fn(async () => {
+        throw new Error("b2 down");
+      }),
+    });
+    const flashCaster = buildFlashCaster({ users, flashes, gateway, promoteGateway });
+
+    await expect(flashCaster.handle(buildPayload({ image_tier: "feed" }))).rejects.toThrow("b2 down");
+
+    expect(gateway.publishCast).not.toHaveBeenCalled();
+  });
 });
 
 describe("FlashCaster.retryFailedCasts", () => {

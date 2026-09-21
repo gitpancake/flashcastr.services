@@ -103,13 +103,17 @@ export class FlashCaster {
       await this.flashes.insertMany([doc]);
     }
 
+    // Promotion belongs to the flash, not to whether a cast is attempted: any flash that
+    // reached this point already matched a registered app user (see the getByUsername guard
+    // above). A promote failure throws uncaught here — it's a retryable job failure for both
+    // casting and non-casting users, and the weekly sweep catches it if retries exhaust.
+    if (flash.image_tier === "feed" && flash.ipfs_cid && flash.ipfs_cid.trim() !== "") {
+      await this.promoteGateway.promoteFeedToKeep(flash.flash_id, flash.ipfs_cid);
+      await this.imageTier.markKept(flash.flash_id);
+    }
+
     let castHash: string | null = null;
     if (shouldAttemptCast) {
-      if (flash.image_tier === "feed") {
-        await this.promoteGateway.promoteFeedToKeep(flash.flash_id, flash.ipfs_cid);
-        await this.imageTier.markKept(flash.flash_id);
-      }
-
       try {
         const signerUuid = this.decrypt(appUser.signer_uuid, this.signerEncryptionKey);
         const cast = await this.gateway.publishCast(signerUuid, flash.flash_id, flash.city);

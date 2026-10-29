@@ -13,7 +13,7 @@ npm-workspaces monorepo: 3 pipeline engines, 1 GraphQL API, 1 LangGraph agent, 1
 
 ## Stack
 
-Node 22 (`node:22-slim`, engines `>=22`), TypeScript strict `nodenext`, Postgres (`pg`), Pinata (legacy default) + Backblaze B2 (`@aws-sdk/client-s3`, `IMAGE_STORE=b2`), Neynar SDK, Apollo Server 5 + `@as-integrations/express4` + graphql-ws 6, prom-client, pino + `pino-loki` via `@flashcastr/logger`.
+Node 22.23.4 (Dockerfiles pin `node:22.23.4-slim`, engines `>=22.23.4`, `.nvmrc`; the floor is CVE-2026-111497, the Brotli decoder out-of-bounds write), TypeScript strict `nodenext`, Postgres (`pg`), Pinata (legacy default) + Backblaze B2 (`@aws-sdk/client-s3`, `IMAGE_STORE=b2`), Neynar SDK, Apollo Server 5 + `@as-integrations/express4` + graphql-ws 6, prom-client, pino + `pino-loki` via `@flashcastr/logger`.
 
 ## Commands
 
@@ -25,7 +25,7 @@ npx tsx --watch apps/<service>/src/main.ts
 docker-compose up
 ```
 
-Lockfile: regenerate with `npx npm@10 install --package-lock-only` after dependency changes; the node image's npm ci rejects npm 11 lockfiles.
+Lockfile: regenerate with `npm install --legacy-peer-deps` on Node 22's own npm 10 after dependency changes; the node image's npm ci rejects npm 11 lockfiles, and the flag is required (see Gotchas). `npm ci` itself needs no flag.
 
 ## Message Flow
 
@@ -85,8 +85,21 @@ Schema source lives in `migrations/` (see README "Local database") — `0001_bas
 
 See `.env.example`. Hardening knobs: `API_KEY`, `TRUST_PROXY_HOPS`, `RATE_LIMIT_SIGNUP_PER_10MIN`, `RATE_LIMIT_IDENTIFICATION_PER_MIN`, `CORS_ORIGINS`, `GRAPHQL_INTROSPECTION`, `CONSUMER_MAX_ATTEMPTS`, `TRENDING_CACHE_TTL_MS`. Production api runs with `GRAPHQL_INTROSPECTION=false` and `CORS_ORIGINS=https://www.flashcastr.app,https://flashcastr.app` (apex 307s to www); a new frontend origin, including Vercel previews, must be added there or its browser calls fail CORS. `NODE_ENV` must be `production` on `flashcastr.api.9094` — today the only one of the 5 Railway services missing it (the api's Dockerfile now sets it for local `docker run` parity, but Railway's own service variable is what matters in production). The real guard against leaking GraphQL stack traces / raw resolver error messages is `errorFormattingOptions` (`apps/api/src/errorFormatting.ts`, spread into the `ApolloServer` constructor) — `includeStacktraceInErrorResponses: false` plus a `formatError` that genericizes any error still carrying the default `INTERNAL_SERVER_ERROR` code. That guard holds regardless of `NODE_ENV`; don't treat the env var alone as the fix.
 
+## Secret rotation
+
+Rotated 2026-10-26 (Railway breach response): Postgres role password (by hand, before this pass), `SIGNER_ENCRYPTION_KEY`, all three B2 scoped keys, `API_KEY`, `ADMIN_TOKEN`, Grafana admin. Recovery copy of the new values: `~/.claude/rotations/flashcastr-20261026.env` (mode 600). What that pass established:
+
+- A variable change alone does not re-credential a running service. Railway records it as a `SKIPPED` deployment (watch patterns) and the container keeps the env it booted with, so services stay up on the *old* secret and die later — whenever a pooled connection drops — with no deploy event linking cause to effect. After rotating anything, force a real deploy per service: GraphQL `serviceInstanceDeploy(environmentId, serviceId, latestCommit: true)`. `railway redeploy` reuses the old settings snapshot and is not enough.
+- Project-level **shared** variables are injected into services and are indistinguishable from service-level ones in `railway variable list`. `NEYNAR_API_KEY` was shared-only for `neynar.9092` + `flashcastr.api.9094`; deleting the shared copy crashed both on `requireEnv` at boot. Before deleting a shared variable, confirm every service that reads it has its own copy. Both now hold service-level values; no shared variables remain in the project.
+- `SIGNER_ENCRYPTION_KEY` has no key-version envelope (`libs/crypto` is bare `iv:authTag:ciphertext`), so rotating it means re-encrypting `flashcastr_users.signer_uuid` in the same pass: decrypt with old, encrypt with new, verify every row decrypts under the new key, all in one transaction, with the api and neynar-engine down so nothing writes mid-migration. Postgres has no public TCP proxy, and pgcrypto has no GCM — run such a script inside a service container (`railway ssh -s flashes.9090`, which carries `pg` and a valid `DATABASE_URL`) and place it under `/app` so `require("pg")` resolves.
+- `GF_SECURITY_ADMIN_PASSWORD` only applies when Grafana first provisions its database; on an existing volume the variable is inert and the old password keeps working. Reset for real inside the container: `./bin/grafana cli --homepath /usr/share/grafana admin reset-admin-password '<new>'`.
+- B2 keys are replace-then-revoke, never the reverse: `b2_create_key` mirroring the old key's `bucketIds`/`namePrefix`/`capabilities` (`b2_list_keys` shows all three), write the new pair, redeploy, verify, then `b2_delete_key` the old id. `promote-sweep` is a cron service — it picks up current variables on its next scheduled run, so it needs no deploy, and forcing one would fire a full sweep.
+
 ## Gotchas
 
+- A full dependency re-resolve (`npm install`, `npm audit fix`) crashes on npm 10.9.9 with `Cannot read properties of null (reading 'edgesOut')` in arborist's `#loadPeerSet`, triggered by vitest's optional peer chain `happy-dom` -> `jsdom` -> `canvas`. It reproduces on an untouched `package.json` with no lockfile, so it is not caused by any local change. `--legacy-peer-deps` resolves cleanly, and `npm ci` from the committed lockfile is unaffected — which is why CI and the Docker builds never see it. `npm audit fix` cannot be used at all here; apply fixes as explicit version bumps plus `overrides`.
+- `@faker-js/faker@7.6.0` is a **production** dependency of `@farcaster/core` and really does ship inside the api and agent-invaders bundles (~325 references; it is also most of the ~9MB bundle size). It cannot be overridden: every patched faker (the advisory covers `<=10.4.0`) has dropped `faker.datatype.number`, which `core`'s factories call *at module import time*, so the override crashes both services on boot. `core` exports only `.`, so the factory module cannot be bypassed. This leaves 3 permanent `npm audit` highs from one root cause; the advisory is `helpers.fake` code execution, and nothing here ever calls faker. Re-check when `@farcaster/core` moves faker to devDependencies.
+- `CastAddBody` gained a required `formatVersion` in `@farcaster/core` 0.21 ("0 = plain text", which is what `core` itself defaults to). `hubFarcasterGateway.castBody` sets it explicitly.
 - Frontend calls `initiateSignup`, `pollSignupStatus`, `saveFlashIdentification` from the browser with no key; never put `withApiKey` on them.
 - `@flashcastr/logger` always writes to stdout (raw pino JSON lines, no pino-pretty) and additionally tees to Loki via `pino.multistream` when `LOKI_URL` is set — `railway logs` shows app output again regardless of Loki's availability. Railway rate-limits ingested logs at 500 lines/sec per replica (per-replica ceiling, not per-service); this pipeline runs well under it. `pino-loki`'s batch timer is a non-unref'd `setInterval`, so merely importing a lib that builds a logger (e.g. `@flashcastr/database`) keeps the event loop alive — a short-lived script must `await closeLoggers()` (`@flashcastr/logger`) alongside `closePool()` or it hangs after its last line. This is what timed out the api's migration pre-deploy step for 600s on PR #34.
 - `getFid()` (api) is memoized per process; the developer mnemonic is only read there.

@@ -57,6 +57,7 @@ export class HubFarcasterGateway implements FarcasterGateway {
   private castBody(draft: CastDraft): CastAddBody {
     const body: CastAddBody = {
       type: CastType.CAST,
+      formatVersion: 0,
       text: draft.text,
       embeds: (draft.embedUrls ?? []).map((url) => ({ url })),
       embedsDeprecated: [],

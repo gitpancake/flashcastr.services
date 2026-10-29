@@ -1,4 +1,4 @@
-FROM node:22-slim AS deps
+FROM node:22.23.4-slim AS deps
 WORKDIR /app
 
 COPY package.json package-lock.json tsconfig.base.json ./
@@ -21,7 +21,7 @@ RUN npx esbuild apps/image-engine/src/main.ts \
 RUN mkdir -p /app/runtime && node -e "require('fs').writeFileSync('/app/runtime/package.json', JSON.stringify({ type: 'module', private: true, dependencies: { pg: '^8.16.3' } }, null, 2))"
 RUN npm install --omit=dev --prefix /app/runtime
 
-FROM node:22-slim
+FROM node:22.23.4-slim
 WORKDIR /app
 
 COPY --from=build /app/runtime/package.json ./package.json

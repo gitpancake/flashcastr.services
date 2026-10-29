@@ -13,10 +13,10 @@
     "@apollo/server": "^5.5.1",
     "@as-integrations/express4": "^1.1.2",
     "@aws-sdk/client-s3": "^3.700.0",
-    "@farcaster/core": "^0.18.10",
-    "@farcaster/hub-nodejs": "^0.15.10",
-    "@graphql-tools/schema": "^10.0.14",
-    "@hono/node-server": "^2.1.1",
+    "@farcaster/core": "^0.21.0",
+    "@farcaster/hub-nodejs": "^0.18.0",
+    "@graphql-tools/schema": "^10.1.5",
+    "@hono/node-server": "^2.1.5",
     "@langchain/core": "^1.2.11",
     "@langchain/langgraph": "^1.4.15",
     "@langchain/langgraph-checkpoint-postgres": "^1.0.5",
@@ -29,7 +29,7 @@
     "express": "^4.21.2",
     "graphql": "^16.10.0",
     "graphql-ws": "^6.2.2",
-    "hono": "^4.13.8",
+    "hono": "^4.13.14",
     "http-proxy-agent": "^7.0.2",
     "https-proxy-agent": "^7.0.6",
     "pg": "^8.16.3",
@@ -40,7 +40,7 @@
     "uuid": "^13.0.0",
     "viem": "^2.23.0",
     "ws": "^8.18.0",
-    "zod": "^4.3.6"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
@@ -52,13 +52,25 @@
     "esbuild": "^0.28.2",
     "prettier": "^2.6.2",
     "typescript": "~5.9.2",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.12"
   },
   "workspaces": [
     "apps/*",
     "libs/*"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.23.4"
+  },
+  "overrides": {
+    "proxy-addr": "^2.0.8",
+    "follow-redirects": "^1.16.2",
+    "source-map-js": "^1.2.2",
+    "qs": "^6.17.1",
+    "@grpc/grpc-js": "^1.14.6",
+    "vite": "^8.3.5",
+    "body-parser": "^1.20.9",
+    "@apollo/server": {
+      "body-parser": "^2.4.0"
+    }
   }
 }
